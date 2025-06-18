@@ -32,6 +32,11 @@
 #include "llvm/CodeGen/RegisterClassInfo.h"
 #include "llvm/MC/LaneBitmask.h"
 #include "llvm/Support/ErrorHandling.h"
+#include <cstdint>
+#include "llvm/Support/Debug.h"
+#include "llvm/Support/raw_ostream.h"
+#include <memory>
+#include <vector>
 
 #define DEBUG_TYPE "machine-scheduler"
 
@@ -68,17 +73,68 @@ static cl::opt<bool> GCNTrackers(
     cl::desc("Use the AMDGPU specific RPTrackers during scheduling"),
     cl::init(false));
 
+static cl::opt<std::string> MLLogFile(
+    "sched-training-log", cl::Hidden,
+    cl::desc("Training log for the instruction scheduling model"));
+
 const unsigned ScheduleMetrics::ScaleFactor = 100;
 
+// might need to modify the correct value.
+// Comment from MLRegAllocEvictAdvisor.cpp:
+// The model learns to pick one of the mask == 1 interferences. This is the
+// name of the output tensor. The contract with the model is that the output
+// will be guaranteed to be to a mask == 1 position. Using a macro here to
+// avoid 'not used' warnings (and keep cond compilation to a minimum)
+#define SchedDecisionName "index_to_sched"
+static const TensorSpec DecisionSpec =
+    TensorSpec::createSpec<int64_t>(SchedDecisionName, {1});
+static const TensorSpec Reward = TensorSpec::createSpec<float>("reward", {1});
+
+#define _DECL_FEATURES(type, name, shape, _)                                   \
+  TensorSpec::createSpec<type>(#name, shape),
+#define _DECL_ACTION_FEATURES(type, name, shape, _)                            \
+  TensorSpec::createSpec<type>(std::string("action_") + #name, shape),
+
+#define SCHED_FEATURES_LIST(M) \
+  M(int64_t, i_dont_know, PerLiveRangeShape???, \
+    "description")
+
+// --------------
+// Features table
+// --------------
 GCNSchedStrategy::GCNSchedStrategy(const MachineSchedContext *C)
     : GenericScheduler(C), TargetOccupancy(0), MF(nullptr),
       DownwardTracker(*C->LIS), UpwardTracker(*C->LIS), HasHighPressure(false) {
+  std::vector<TensorSpec> InputFeatures = {};
+  Runner = std::make_unique<NoInferenceModelRunner>(C->MF->getFunction().getContext(),
+						    InputFeatures);
+
+  if (MLLogFile.empty()) {
+    LLVM_DEBUG(dbgs() << "MLGCNSchedStrategy] No LogFile provided.");
+    return;
+  }
+
+  std::error_code EC;
+  auto OS = std::make_unique<raw_fd_ostream>(MLLogFile, EC);
+  if (EC) {
+    LLVM_DEBUG(dbgs() << "[MLGCNSchedStrategy] " << EC.message() << ":" << MLLogFile);
+    return;
+  }
+
+  std::vector<TensorSpec> LFS = InputFeatures;
+  LFS.push_back(DecisionSpec);
+  Log = std::make_unique<Logger>(std::move(OS), LFS, Reward,
+				 /*IncludeReward*/ true);
 }
 
 void GCNSchedStrategy::initialize(ScheduleDAGMI *DAG) {
   GenericScheduler::initialize(DAG);
 
   MF = &DAG->MF;
+
+  Log->switchContext(MF->getName());
+  // only InteractiveModelRunner implements switchContext
+  Runner->switchContext(MF->getName());
 
   const GCNSubtarget &ST = MF->getSubtarget<GCNSubtarget>();
 
@@ -480,6 +536,17 @@ SUnit *GCNSchedStrategy::pickNode(bool &IsTopNode) {
     Top.removeReady(SU);
   if (SU->isBottomReady())
     Bot.removeReady(SU);
+
+  Log->startObservation();
+  size_t CurrentFeature = 0;
+  size_t FeatureCount = 0;
+  for (; CurrentFeature < FeatureCount; ++CurrentFeature) {
+    Log->logTensorValue(CurrentFeature,
+			reinterpret_cast<const char *>(
+			    getRunner().getTensorUntyped(CurrentFeature)));
+  }
+  Log->logTensorValue(CurrentFeature, reinterpret_cast<const char *>(&SU->NodeNum));
+  Log->endObservation();
 
   LLVM_DEBUG(dbgs() << "Scheduling SU(" << SU->NodeNum << ") "
                     << *SU->getInstr());
@@ -987,8 +1054,8 @@ void GCNScheduleDAGMILive::runSchedStages() {
                              Stage->getRegionIdx()));
       }
 
-      ScheduleDAGMILive::schedule();
-      Stage->finalizeGCNRegion();
+      ScheduleDAGMILive::schedule(); // call pickNode
+      Stage->finalizeGCNRegion(); // call checkScheduling
     }
 
     Stage->finalizeGCNSchedStage();

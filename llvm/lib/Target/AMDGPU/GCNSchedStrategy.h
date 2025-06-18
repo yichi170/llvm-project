@@ -19,6 +19,15 @@
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/MachineScheduler.h"
 
+#include "llvm/Analysis/InteractiveModelRunner.h"
+#include "llvm/Analysis/MLModelRunner.h"
+#include "llvm/Analysis/TensorSpec.h"
+#if defined(LLVM_HAVE_TF_AOT_REGALLOCEVICTMODEL) || defined(LLVM_HAVE_TFLITE)
+#include "llvm/Analysis/ModelUnderTrainingRunner.h"
+#include "llvm/Analysis/NoInferenceModelRunner.h"
+#include "llvm/Analysis/Utils/TrainingLogger.h"
+#endif
+
 namespace llvm {
 
 class SIMachineFunctionInfo;
@@ -55,6 +64,8 @@ protected:
                      const SIRegisterInfo *SRI, unsigned SGPRPressure,
                      unsigned VGPRPressure, bool IsBottomUp);
 
+  const MLModelRunner &getRunner() const { return *Runner; }
+
   std::vector<unsigned> Pressure;
 
   std::vector<unsigned> MaxPressure;
@@ -78,6 +89,9 @@ protected:
 
   // GCN RP Tracker for botttom-up scheduling
   mutable GCNUpwardRPTracker UpwardTracker;
+
+  std::unique_ptr<MLModelRunner> Runner;
+  std::unique_ptr<Logger> Log;
 
 public:
   // schedule() have seen register pressure over the critical limits and had to
