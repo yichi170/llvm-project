@@ -29,6 +29,7 @@
 #include "SIMachineFunctionInfo.h"
 #include "Utils/AMDGPUBaseInfo.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/CodeGen/MachineScheduler.h"
 #include "llvm/CodeGen/RegisterClassInfo.h"
 #include "llvm/MC/LaneBitmask.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -73,10 +74,6 @@ static cl::opt<bool> GCNTrackers(
     cl::desc("Use the AMDGPU specific RPTrackers during scheduling"),
     cl::init(false));
 
-static cl::opt<std::string> MLLogFile(
-    "sched-training-log", cl::Hidden,
-    cl::desc("Training log for the instruction scheduling model"));
-
 const unsigned ScheduleMetrics::ScaleFactor = 100;
 
 // might need to modify the correct value.
@@ -85,56 +82,21 @@ const unsigned ScheduleMetrics::ScaleFactor = 100;
 // name of the output tensor. The contract with the model is that the output
 // will be guaranteed to be to a mask == 1 position. Using a macro here to
 // avoid 'not used' warnings (and keep cond compilation to a minimum)
-#define SchedDecisionName "index_to_sched"
-static const TensorSpec DecisionSpec =
-    TensorSpec::createSpec<int64_t>(SchedDecisionName, {1});
-static const TensorSpec Reward = TensorSpec::createSpec<float>("reward", {1});
 
-#define _DECL_FEATURES(type, name, shape, _)                                   \
-  TensorSpec::createSpec<type>(#name, shape),
-#define _DECL_ACTION_FEATURES(type, name, shape, _)                            \
-  TensorSpec::createSpec<type>(std::string("action_") + #name, shape),
-
-#define SCHED_FEATURES_LIST(M) \
-  M(int64_t, i_dont_know, PerLiveRangeShape???, \
-    "description")
-
-// --------------
-// Features table
-// --------------
 GCNSchedStrategy::GCNSchedStrategy(const MachineSchedContext *C)
     : GenericScheduler(C), TargetOccupancy(0), MF(nullptr),
-      DownwardTracker(*C->LIS), UpwardTracker(*C->LIS), HasHighPressure(false) {
-  std::vector<TensorSpec> InputFeatures = {};
-  Runner = std::make_unique<NoInferenceModelRunner>(C->MF->getFunction().getContext(),
-						    InputFeatures);
-
-  if (MLLogFile.empty()) {
-    LLVM_DEBUG(dbgs() << "MLGCNSchedStrategy] No LogFile provided.");
-    return;
-  }
-
-  std::error_code EC;
-  auto OS = std::make_unique<raw_fd_ostream>(MLLogFile, EC);
-  if (EC) {
-    LLVM_DEBUG(dbgs() << "[MLGCNSchedStrategy] " << EC.message() << ":" << MLLogFile);
-    return;
-  }
-
-  std::vector<TensorSpec> LFS = InputFeatures;
-  LFS.push_back(DecisionSpec);
-  Log = std::make_unique<Logger>(std::move(OS), LFS, Reward,
-				 /*IncludeReward*/ true);
-}
+      DownwardTracker(*C->LIS), UpwardTracker(*C->LIS), HasHighPressure(false) {}
 
 void GCNSchedStrategy::initialize(ScheduleDAGMI *DAG) {
   GenericScheduler::initialize(DAG);
 
   MF = &DAG->MF;
 
-  Log->switchContext(MF->getName());
-  // only InteractiveModelRunner implements switchContext
-  Runner->switchContext(MF->getName());
+  if (Log != nullptr) {
+    Log->switchContext(MF->getName());
+    // only InteractiveModelRunner implements switchContext
+    Runner->switchContext(MF->getName());
+  }
 
   const GCNSubtarget &ST = MF->getSubtarget<GCNSubtarget>();
 
@@ -379,6 +341,8 @@ void GCNSchedStrategy::pickNodeFromQueue(SchedBoundary &Zone,
                                          const RegPressureTracker &RPTracker,
                                          SchedCandidate &Cand,
                                          bool IsBottomUp) {
+  return GenericScheduler::pickNodeFromQueue(Zone, ZonePolicy, RPTracker, Cand);
+
   const SIRegisterInfo *SRI = static_cast<const SIRegisterInfo *>(TRI);
   ArrayRef<unsigned> Pressure = RPTracker.getRegSetPressureAtPos();
   unsigned SGPRPressure = 0;
@@ -416,7 +380,9 @@ void GCNSchedStrategy::pickNodeFromQueue(SchedBoundary &Zone,
 
 // This function is mostly cut and pasted from
 // GenericScheduler::pickNodeBidirectional()
-SUnit *GCNSchedStrategy::pickNodeBidirectional(bool &IsTopNode) {
+SUnit *GCNSchedStrategy::pickNodeBidirectional(bool &IsTopNode,
+                                               int &SchedIndex,
+                                               int &PickedNodeFromBot) {
   // Schedule as far as possible in the direction of no choice. This is most
   // efficient, but also provides the best heuristics for CriticalPSets.
   if (SUnit *SU = Bot.pickOnlyChoice()) {
@@ -488,6 +454,11 @@ SUnit *GCNSchedStrategy::pickNodeBidirectional(bool &IsTopNode) {
   tryCandidate(Cand, TopCand, nullptr);
   if (TopCand.Reason != NoCand) {
     Cand.setBest(TopCand);
+    SchedIndex = Top.Available.getPos(Cand.SU);
+    PickedNodeFromBot = 0;
+  } else {
+    SchedIndex = Bot.Available.getPos(Cand.SU);
+    PickedNodeFromBot = 1;
   }
   LLVM_DEBUG(dbgs() << "Picking: "; traceCandidate(Cand););
 
@@ -503,7 +474,9 @@ SUnit *GCNSchedStrategy::pickNode(bool &IsTopNode) {
            Bot.Available.empty() && Bot.Pending.empty() && "ReadyQ garbage");
     return nullptr;
   }
+  resetRunnerInput();
   SUnit *SU;
+  int SchedIndex = -1, PickedNodeFromBot = -1;
   do {
     if (RegionPolicy.OnlyTopDown) {
       SU = Top.pickOnlyChoice();
@@ -528,28 +501,21 @@ SUnit *GCNSchedStrategy::pickNode(bool &IsTopNode) {
       }
       IsTopNode = false;
     } else {
-      SU = pickNodeBidirectional(IsTopNode);
+      SU = pickNodeBidirectional(IsTopNode, SchedIndex, PickedNodeFromBot);
     }
   } while (SU->isScheduled);
+
+  LLVM_DEBUG(dbgs() << "[GCNSchedStrategy::pickNode] Log data for Machine Learning\n");
+  logMLFeatures(SchedIndex, PickedNodeFromBot);
 
   if (SU->isTopReady())
     Top.removeReady(SU);
   if (SU->isBottomReady())
     Bot.removeReady(SU);
 
-  Log->startObservation();
-  size_t CurrentFeature = 0;
-  size_t FeatureCount = 0;
-  for (; CurrentFeature < FeatureCount; ++CurrentFeature) {
-    Log->logTensorValue(CurrentFeature,
-			reinterpret_cast<const char *>(
-			    getRunner().getTensorUntyped(CurrentFeature)));
-  }
-  Log->logTensorValue(CurrentFeature, reinterpret_cast<const char *>(&SU->NodeNum));
-  Log->endObservation();
-
   LLVM_DEBUG(dbgs() << "Scheduling SU(" << SU->NodeNum << ") "
                     << *SU->getInstr());
+
   return SU;
 }
 

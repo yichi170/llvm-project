@@ -19,15 +19,6 @@
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/MachineScheduler.h"
 
-#include "llvm/Analysis/InteractiveModelRunner.h"
-#include "llvm/Analysis/MLModelRunner.h"
-#include "llvm/Analysis/TensorSpec.h"
-#if defined(LLVM_HAVE_TF_AOT_REGALLOCEVICTMODEL) || defined(LLVM_HAVE_TFLITE)
-#include "llvm/Analysis/ModelUnderTrainingRunner.h"
-#include "llvm/Analysis/NoInferenceModelRunner.h"
-#include "llvm/Analysis/Utils/TrainingLogger.h"
-#endif
-
 namespace llvm {
 
 class SIMachineFunctionInfo;
@@ -53,7 +44,7 @@ raw_ostream &operator<<(raw_ostream &OS, const GCNSchedStageID &StageID);
 /// heuristics to determine excess/critical pressure sets.
 class GCNSchedStrategy : public GenericScheduler {
 protected:
-  SUnit *pickNodeBidirectional(bool &IsTopNode);
+  SUnit *pickNodeBidirectional(bool &IsTopNode, int &SchedIndex, int &PickedNodeFromBot);
 
   void pickNodeFromQueue(SchedBoundary &Zone, const CandPolicy &ZonePolicy,
                          const RegPressureTracker &RPTracker,
@@ -63,8 +54,6 @@ protected:
                      const RegPressureTracker &RPTracker,
                      const SIRegisterInfo *SRI, unsigned SGPRPressure,
                      unsigned VGPRPressure, bool IsBottomUp);
-
-  const MLModelRunner &getRunner() const { return *Runner; }
 
   std::vector<unsigned> Pressure;
 
@@ -89,9 +78,6 @@ protected:
 
   // GCN RP Tracker for botttom-up scheduling
   mutable GCNUpwardRPTracker UpwardTracker;
-
-  std::unique_ptr<MLModelRunner> Runner;
-  std::unique_ptr<Logger> Log;
 
 public:
   // schedule() have seen register pressure over the critical limits and had to

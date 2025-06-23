@@ -98,6 +98,14 @@
 #include <string>
 #include <vector>
 
+
+#include "llvm/Analysis/InteractiveModelRunner.h"
+#include "llvm/Analysis/MLModelRunner.h"
+#if defined(LLVM_HAVE_TF_AOT_REGALLOCEVICTMODEL) || defined(LLVM_HAVE_TFLITE)
+#include "llvm/Analysis/ModelUnderTrainingRunner.h"
+#include "llvm/Analysis/Utils/TrainingLogger.h"
+#endif
+
 namespace llvm {
 namespace impl_detail {
 // FIXME: Remove these declarations once RegisterClassInfo is queryable as an
@@ -583,6 +591,8 @@ public:
   ArrayRef<SUnit*> elements() { return Queue; }
 
   iterator find(SUnit *SU) { return llvm::find(Queue, SU); }
+
+  int64_t getPos(SUnit *SU) { return llvm::find(Queue, SU) - Queue.begin(); }
 
   void push(SUnit *SU) {
     Queue.push_back(SU);
@@ -1246,9 +1256,10 @@ LLVM_ABI int biasPhysReg(const SUnit *SU, bool isTop);
 /// the schedule.
 class LLVM_ABI GenericScheduler : public GenericSchedulerBase {
 public:
-  GenericScheduler(const MachineSchedContext *C):
-    GenericSchedulerBase(C), Top(SchedBoundary::TopQID, "TopQ"),
-    Bot(SchedBoundary::BotQID, "BotQ") {}
+  GenericScheduler(const MachineSchedContext *C);
+  // GenericScheduler(const MachineSchedContext *C):
+  //   GenericSchedulerBase(C), Top(SchedBoundary::TopQID, "TopQ"),
+  //   Bot(SchedBoundary::BotQID, "BotQ") {}
 
   void initPolicy(MachineBasicBlock::iterator Begin,
                   MachineBasicBlock::iterator End,
@@ -1300,6 +1311,11 @@ protected:
   /// Candidate last picked from Bot boundary.
   SchedCandidate BotCand;
 
+
+  // Machine Learning Guided Instruction Scheduling
+  std::unique_ptr<MLModelRunner> Runner;
+  std::unique_ptr<Logger> Log;
+
   void checkAcyclicLatency();
 
   void initCandidate(SchedCandidate &Cand, SUnit *SU, bool AtTop,
@@ -1309,7 +1325,10 @@ protected:
   virtual bool tryCandidate(SchedCandidate &Cand, SchedCandidate &TryCand,
                             SchedBoundary *Zone) const;
 
-  SUnit *pickNodeBidirectional(bool &IsTopNode);
+  bool tryCandidateAndExtractFeatures(SchedCandidate &Cand, SchedCandidate &TryCand,
+                                      SchedBoundary *Zone, int64_t Pos = -1) const;
+
+  SUnit *pickNodeBidirectional(bool &IsTopNode, int &SchedIndex, int &PickedNodeFromBot);
 
   void pickNodeFromQueue(SchedBoundary &Zone,
                          const CandPolicy &ZonePolicy,
@@ -1317,6 +1336,12 @@ protected:
                          SchedCandidate &Candidate);
 
   void reschedulePhysReg(SUnit *SU, bool isTop);
+
+  const MLModelRunner &getRunner() const { return *Runner; }
+
+  void resetRunnerInput();
+
+  void logMLFeatures(int SchedIndex, int PickedNodeFromBot);
 };
 
 /// PostGenericScheduler - Interface to the scheduling algorithm used by
