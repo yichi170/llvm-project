@@ -317,8 +317,12 @@ static const TensorSpec Reward = TensorSpec::createSpec<float>("reward", {1});
 static const int MaxNumInstCandidates = 64 * 2;
 static const std::vector<int64_t> PerInstrFeatureShape{1, MaxNumInstCandidates};
 #define SCHED_FEATURES_LIST(M)                                          \
+  M(int64_t, mask, PerInstrFeatureShape,				\
+    "boolean values, 1 if the position is valid")			\
   M(int64_t, is_top, PerInstrFeatureShape,                              \
     "boolean values, 1 if the instruction is from Top Queue")           \
+  M(int64_t, is_bot, PerInstrFeatureShape,                              \
+    "boolean values, 1 if the instruction is from Bot Queue")           \
   M(int64_t, bias_phy_regs, PerInstrFeatureShape,                       \
     "records the value of biasPhysReg")                                 \
   M(int64_t, excess_unit_inc, PerInstrFeatureShape, "")                 \
@@ -4029,16 +4033,21 @@ bool GenericScheduler::tryCandidateAndExtractFeatures(SchedCandidate &Cand,
   if (Log == nullptr)
     return tryCandidate(Cand, TryCand, Zone);
 
-  LLVM_DEBUG(dbgs() << "[ML tryCand & extractFeatures] Try extracting... ");
+  LLVM_DEBUG(dbgs() << "[ML tryCand & extractFeatures] Try extracting... \n");
   // Set the features at the column 'Idx'.
   // if Candidate is from Bot, Idx = 2 * Pos
   // if Candidate is from Top, Idx = 2 * Pos + 1
-  LLVM_DEBUG(dbgs() << "TryCand.AtTop: " << TryCand.AtTop << ",\t");
+  LLVM_DEBUG(dbgs() << "Index: " << 2 * Pos + TryCand.AtTop << ", ");
+  LLVM_DEBUG(dbgs() << "TryCand.AtTop: " << TryCand.AtTop << "\n");
+  LLVM_DEBUG(dbgs() << "RPDelta.Excess.UnitInc: " << TryCand.RPDelta.Excess.getUnitInc() << ", ");
+  LLVM_DEBUG(dbgs() << "RPDelta.Excess.UnitInc: " << TryCand.RPDelta.CriticalMax.getUnitInc() << "\n");
 #define SET(ID, TYPE, VAL, ISTOP)                                       \
   do {                                                                  \
     Runner->getTensor<TYPE>(SchedFeatureIDs::ID)[2 * Pos + ISTOP] = static_cast<TYPE>(VAL); \
   } while (false)
+  SET(mask, int64_t, 1, TryCand.AtTop);
   SET(is_top, int64_t, TryCand.AtTop, TryCand.AtTop);
+  SET(is_bot, int64_t, !TryCand.AtTop, TryCand.AtTop);
   SET(bias_phy_regs, int64_t, biasPhysReg(TryCand.SU, TryCand.AtTop), TryCand.AtTop);
   SET(excess_unit_inc, int64_t, TryCand.RPDelta.Excess.getUnitInc(), TryCand.AtTop);
   SET(critical_max_unit_inc, int64_t, TryCand.RPDelta.CriticalMax.getUnitInc(), TryCand.AtTop);
@@ -4197,8 +4206,8 @@ void GenericScheduler::pickNodeFromQueue(SchedBoundary &Zone,
 
 /// Pick the best candidate node from either the top or bottom queue.
 SUnit *GenericScheduler::pickNodeBidirectional(bool &IsTopNode,
-                                               int &SchedIndex,
-                                               int &PickedNodeFromBot) {
+                                               int64_t &SchedIndex,
+                                               int8_t &PickedNodeFromTop) {
   // Schedule as far as possible in the direction of no choice. This is most
   // efficient, but also provides the best heuristics for CriticalPSets.
   if (SUnit *SU = Bot.pickOnlyChoice()) {
@@ -4269,10 +4278,10 @@ SUnit *GenericScheduler::pickNodeBidirectional(bool &IsTopNode,
     Cand.setBest(TopCand);
     LLVM_DEBUG(traceCandidate(Cand));
     SchedIndex = Top.Available.getPos(Cand.SU);
-    PickedNodeFromBot = 0;
+    PickedNodeFromTop = 1;
   } else {
     SchedIndex = Bot.Available.getPos(Cand.SU);
-    PickedNodeFromBot = 1;
+    PickedNodeFromTop = 0;
   }
 
   IsTopNode = Cand.AtTop;
@@ -4289,7 +4298,8 @@ SUnit *GenericScheduler::pickNode(bool &IsTopNode) {
   }
   resetRunnerInput();
   SUnit *SU;
-  int SchedIndex = -1, PickedNodeFromBot = -1;
+  int64_t SchedIndex = -1;
+  int8_t PickedNodeFromTop = -1;
   do {
     if (RegionPolicy.OnlyTopDown) {
       SU = Top.pickOnlyChoice();
@@ -4314,7 +4324,7 @@ SUnit *GenericScheduler::pickNode(bool &IsTopNode) {
       }
       IsTopNode = false;
     } else {
-      SU = pickNodeBidirectional(IsTopNode, SchedIndex, PickedNodeFromBot);
+      SU = pickNodeBidirectional(IsTopNode, SchedIndex, PickedNodeFromTop);
     }
   } while (SU->isScheduled);
 
@@ -4341,8 +4351,10 @@ SUnit *GenericScheduler::pickNode(bool &IsTopNode) {
   LLVM_DEBUG(dbgs() << "Scheduling SU(" << SU->NodeNum << ") "
                     << *SU->getInstr());
 
-  LLVM_DEBUG(dbgs() << "[GenericScheduler::pickNode] Log data for Machine Learning (ML)\n");
-  logMLFeatures(SchedIndex, PickedNodeFromBot);
+  if (Log != nullptr) {
+    LLVM_DEBUG(dbgs() << "[GenericScheduler::pickNode] Log data for Machine Learning (ML)\n");
+    logMLFeatures(SchedIndex, PickedNodeFromTop);
+  }
 
   if (IsTopNode) {
     if (SU->NodeNum == TopIdx++)
@@ -4402,9 +4414,12 @@ void GenericScheduler::schedNode(SUnit *SU, bool IsTopNode) {
   }
 }
 
-void GenericScheduler::logMLFeatures(int SchedIndex, int PickedNodeFromBot) {
-  if (Log->hasObservationInProgress())
-    Log->logReward<float>(0.0);
+void GenericScheduler::logMLFeatures(int64_t SchedIndex, int8_t PickedNodeFromTop) {
+  //  if (Log->hasObservationInProgress())
+  //    Log->logReward<float>(0.0);
+  if (SchedIndex < 0)
+    return;
+
   Log->startObservation();
   size_t CurrentFeature = 0;
   for (; CurrentFeature < SchedFeatureIDs::FeatureCount; ++CurrentFeature) {
@@ -4412,8 +4427,12 @@ void GenericScheduler::logMLFeatures(int SchedIndex, int PickedNodeFromBot) {
                         reinterpret_cast<const char *>(getRunner().getTensorUntyped(CurrentFeature)));
   }
   // Log the decision (index of ready queue) // may need to add direction (top/bottom)
+  LLVM_DEBUG(dbgs() << "logMLFeatures: schedule index = " << SchedIndex << "\n");
+  SchedIndex = SchedIndex * 2 + PickedNodeFromTop;
   Log->logTensorValue(CurrentFeature, reinterpret_cast<const char *>(&SchedIndex));
   Log->endObservation();
+
+  Log->logReward<float>(0.0);
 }
 
 /// Create the standard converging machine scheduler. This will be used as the

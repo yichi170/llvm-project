@@ -381,8 +381,8 @@ void GCNSchedStrategy::pickNodeFromQueue(SchedBoundary &Zone,
 // This function is mostly cut and pasted from
 // GenericScheduler::pickNodeBidirectional()
 SUnit *GCNSchedStrategy::pickNodeBidirectional(bool &IsTopNode,
-                                               int &SchedIndex,
-                                               int &PickedNodeFromBot) {
+                                               int64_t &SchedIndex,
+                                               int8_t &PickedNodeFromTop) {
   // Schedule as far as possible in the direction of no choice. This is most
   // efficient, but also provides the best heuristics for CriticalPSets.
   if (SUnit *SU = Bot.pickOnlyChoice()) {
@@ -455,10 +455,10 @@ SUnit *GCNSchedStrategy::pickNodeBidirectional(bool &IsTopNode,
   if (TopCand.Reason != NoCand) {
     Cand.setBest(TopCand);
     SchedIndex = Top.Available.getPos(Cand.SU);
-    PickedNodeFromBot = 0;
+    PickedNodeFromTop = 1;
   } else {
     SchedIndex = Bot.Available.getPos(Cand.SU);
-    PickedNodeFromBot = 1;
+    PickedNodeFromTop = 0;
   }
   LLVM_DEBUG(dbgs() << "Picking: "; traceCandidate(Cand););
 
@@ -476,7 +476,8 @@ SUnit *GCNSchedStrategy::pickNode(bool &IsTopNode) {
   }
   resetRunnerInput();
   SUnit *SU;
-  int SchedIndex = -1, PickedNodeFromBot = -1;
+  int64_t SchedIndex = -1;
+  int8_t PickedNodeFromTop = -1;
   do {
     if (RegionPolicy.OnlyTopDown) {
       SU = Top.pickOnlyChoice();
@@ -501,12 +502,14 @@ SUnit *GCNSchedStrategy::pickNode(bool &IsTopNode) {
       }
       IsTopNode = false;
     } else {
-      SU = pickNodeBidirectional(IsTopNode, SchedIndex, PickedNodeFromBot);
+      SU = pickNodeBidirectional(IsTopNode, SchedIndex, PickedNodeFromTop);
     }
   } while (SU->isScheduled);
 
-  LLVM_DEBUG(dbgs() << "[GCNSchedStrategy::pickNode] Log data for Machine Learning\n");
-  logMLFeatures(SchedIndex, PickedNodeFromBot);
+  if (Log != nullptr) {
+    LLVM_DEBUG(dbgs() << "[GCNSchedStrategy::pickNode] Log data for Machine Learning\n");
+    logMLFeatures(SchedIndex, PickedNodeFromTop);
+  }
 
   if (SU->isTopReady())
     Top.removeReady(SU);
@@ -1193,7 +1196,7 @@ bool GCNSchedStage::initGCNRegion() {
   if (DAG.begin() == DAG.end() || DAG.begin() == std::prev(DAG.end()))
     return false;
 
-  LLVM_DEBUG(dbgs() << "********** MI Scheduling **********\n");
+  LLVM_DEBUG(dbgs() << "********** [GCNSchedStage::initGCNRegion] MI Scheduling **********\n");
   LLVM_DEBUG(dbgs() << MF.getName() << ":" << printMBBReference(*CurrentMBB)
                     << " " << CurrentMBB->getName()
                     << "\n  From: " << *DAG.begin() << "    To: ";

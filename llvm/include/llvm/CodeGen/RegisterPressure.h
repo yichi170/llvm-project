@@ -371,7 +371,7 @@ class RegPressureTracker {
   /// Track the max pressure within the region traversed so far.
   RegisterPressure &P;
 
-  /// Run in two modes dependending on whether constructed with IntervalPressure
+  /// Run in two modes depending on whether constructed with IntervalPressure
   /// or RegisterPressure. If requireIntervals is false, LIS are ignored.
   bool RequireIntervals;
 

@@ -93,6 +93,7 @@
 #include "llvm/Support/ErrorHandling.h"
 #include <algorithm>
 #include <cassert>
+#include <cstdint>
 #include <llvm/Support/raw_ostream.h>
 #include <memory>
 #include <string>
@@ -1328,7 +1329,7 @@ protected:
   bool tryCandidateAndExtractFeatures(SchedCandidate &Cand, SchedCandidate &TryCand,
                                       SchedBoundary *Zone, int64_t Pos = -1) const;
 
-  SUnit *pickNodeBidirectional(bool &IsTopNode, int &SchedIndex, int &PickedNodeFromBot);
+  SUnit *pickNodeBidirectional(bool &IsTopNode, int64_t &SchedIndex, int8_t &PickedNodeFromTop);
 
   void pickNodeFromQueue(SchedBoundary &Zone,
                          const CandPolicy &ZonePolicy,
@@ -1341,7 +1342,7 @@ protected:
 
   void resetRunnerInput();
 
-  void logMLFeatures(int SchedIndex, int PickedNodeFromBot);
+  void logMLFeatures(int64_t SchedIndex, int8_t PickedNodeFromTop);
 };
 
 /// PostGenericScheduler - Interface to the scheduling algorithm used by
