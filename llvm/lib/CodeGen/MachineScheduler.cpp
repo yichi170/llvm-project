@@ -3315,14 +3315,16 @@ GenericScheduler::GenericScheduler(const MachineSchedContext *C)
     : GenericSchedulerBase(C), Top(SchedBoundary::TopQID, "TopQ"),
       Bot(SchedBoundary::BotQID, "BotQ") {
 
-  std::vector<TensorSpec> InputFeatures = {SCHED_FEATURES_LIST(_DECL_FEATURES)};
-  Runner = std::make_unique<NoInferenceModelRunner>(C->MF->getFunction().getContext(),
-                                                    InputFeatures);
-
   if (MLSchedTrainingLog.empty()) {
+    Log = nullptr;
+    Runner = nullptr;
     LLVM_DEBUG(dbgs() << "[ML GenericScheduler] No MLSchedTrainingLog provided.");
     return;
   }
+
+  std::vector<TensorSpec> InputFeatures = {SCHED_FEATURES_LIST(_DECL_FEATURES)};
+  Runner = std::make_unique<NoInferenceModelRunner>(C->MF->getFunction().getContext(),
+                                                    InputFeatures);
 
   std::error_code EC;
   auto OS = std::make_unique<raw_fd_ostream>(MLSchedTrainingLog, EC);
@@ -4296,7 +4298,8 @@ SUnit *GenericScheduler::pickNode(bool &IsTopNode) {
            Bot.Available.empty() && Bot.Pending.empty() && "ReadyQ garbage");
     return nullptr;
   }
-  resetRunnerInput();
+  if (Log != nullptr)
+    resetRunnerInput();
   SUnit *SU;
   int64_t SchedIndex = -1;
   int8_t PickedNodeFromTop = -1;

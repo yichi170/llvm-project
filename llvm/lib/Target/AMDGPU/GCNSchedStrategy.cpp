@@ -341,7 +341,7 @@ void GCNSchedStrategy::pickNodeFromQueue(SchedBoundary &Zone,
                                          const RegPressureTracker &RPTracker,
                                          SchedCandidate &Cand,
                                          bool IsBottomUp) {
-  return GenericScheduler::pickNodeFromQueue(Zone, ZonePolicy, RPTracker, Cand);
+  // return GenericScheduler::pickNodeFromQueue(Zone, ZonePolicy, RPTracker, Cand);
 
   const SIRegisterInfo *SRI = static_cast<const SIRegisterInfo *>(TRI);
   ArrayRef<unsigned> Pressure = RPTracker.getRegSetPressureAtPos();
@@ -367,7 +367,7 @@ void GCNSchedStrategy::pickNodeFromQueue(SchedBoundary &Zone,
                   VGPRPressure, IsBottomUp);
     // Pass SchedBoundary only when comparing nodes from the same boundary.
     SchedBoundary *ZoneArg = Cand.AtTop == TryCand.AtTop ? &Zone : nullptr;
-    tryCandidate(Cand, TryCand, ZoneArg);
+    tryCandidateAndExtractFeatures(Cand, TryCand, ZoneArg, Q.getPos(SU));
     if (TryCand.Reason != NoCand) {
       // Initialize resource delta if needed in case future heuristics query it.
       if (TryCand.ResDelta == SchedResourceDelta())
@@ -474,7 +474,8 @@ SUnit *GCNSchedStrategy::pickNode(bool &IsTopNode) {
            Bot.Available.empty() && Bot.Pending.empty() && "ReadyQ garbage");
     return nullptr;
   }
-  resetRunnerInput();
+  if (Log != nullptr)
+    resetRunnerInput();
   SUnit *SU;
   int64_t SchedIndex = -1;
   int8_t PickedNodeFromTop = -1;
