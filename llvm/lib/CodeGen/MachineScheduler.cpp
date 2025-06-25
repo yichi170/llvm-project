@@ -296,9 +296,24 @@ static cl::opt<unsigned>
     MIResourceCutOff("misched-resource-cutoff", cl::Hidden,
                      cl::desc("Number of intervals to track"), cl::init(10));
 
-static cl::opt<std::string>
-    MLSchedTrainingLog("mlsched-training-log", cl::Hidden,
-              cl::desc("Training log for the instruction scheduling model"));
+static cl::opt<GenericScheduler::SchedMode>
+    EnabledMode("sched-mode", cl::Hidden,
+                cl::init(GenericScheduler::SchedMode::Default),
+                cl::desc("Set ML Sched Mode"),
+                cl::values(clEnumValN(GenericScheduler::SchedMode::Default,
+                                      "default", "Default"),
+                           clEnumValN(GenericScheduler::SchedMode::Release,
+                                      "release", "precompiled"),
+                           clEnumValN(GenericScheduler::SchedMode::Development,
+                                      "development", "for training")));
+
+static cl::opt<std::string> MLSchedTrainingLog(
+    "mlsched-training-log", cl::Hidden,
+    cl::desc("Training log for the instruction scheduling model"));
+
+static cl::opt<std::string> MLModelUnderTraining(
+    "mlsched-model", cl::Hidden,
+    cl::desc("The model being trained for instruction scheduling"));
 
 #define SchedDecisionName "index_to_sched"
 static const TensorSpec DecisionSpec =
@@ -3313,18 +3328,34 @@ LLVM_DUMP_METHOD void SchedBoundary::dumpScheduledState() const {
 
 GenericScheduler::GenericScheduler(const MachineSchedContext *C)
     : GenericSchedulerBase(C), Top(SchedBoundary::TopQID, "TopQ"),
-      Bot(SchedBoundary::BotQID, "BotQ") {
+      Bot(SchedBoundary::BotQID, "BotQ"), Mode(EnabledMode) {
 
-  if (MLSchedTrainingLog.empty()) {
+  if (Mode == SchedMode::Default)
+    return;
+
+  if (Mode == SchedMode::Development &&
+      MLModelUnderTraining.empty() && MLSchedTrainingLog.empty()) {
     Log = nullptr;
     Runner = nullptr;
-    LLVM_DEBUG(dbgs() << "[ML GenericScheduler] No MLSchedTrainingLog provided.");
+    LLVM_DEBUG(dbgs() << "[ML GenericScheduler] in development mode, logging or "
+	       << "a training model shuold be provided.");
     return;
   }
 
   std::vector<TensorSpec> InputFeatures = {SCHED_FEATURES_LIST(_DECL_FEATURES)};
-  Runner = std::make_unique<NoInferenceModelRunner>(C->MF->getFunction().getContext(),
-                                                    InputFeatures);
+  if (Mode == SchedMode::Release) {
+    Log = nullptr;
+    Runner = nullptr;
+    LLVM_DEBUG(dbgs() << "[ML GenericScheduler] release mode hasn't been implemented.");
+    return;
+  }
+
+  // Mode == SchedMode::Development
+  if (MLModelUnderTraining.empty())
+    Runner = std::make_unique<NoInferenceModelRunner>(C->MF->getFunction().getContext(),
+						      InputFeatures);
+  else
+    ; // Runner = ModelUnderTrainingRunner::createAndEnsureValid();
 
   std::error_code EC;
   auto OS = std::make_unique<raw_fd_ostream>(MLSchedTrainingLog, EC);

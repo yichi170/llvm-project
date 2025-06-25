@@ -1300,6 +1300,8 @@ public:
 
   void registerRoots() override;
 
+  enum class SchedMode : int { Default, Release, Development };
+
 protected:
   ScheduleDAGMILive *DAG = nullptr;
 
@@ -1343,6 +1345,8 @@ protected:
   void resetRunnerInput();
 
   void logMLFeatures(int64_t SchedIndex, int8_t PickedNodeFromTop);
+
+  const SchedMode Mode;
 };
 
 /// PostGenericScheduler - Interface to the scheduling algorithm used by
