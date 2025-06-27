@@ -21,8 +21,6 @@
 #include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/iterator_range.h"
 #include "llvm/Analysis/AliasAnalysis.h"
-#include "llvm/Analysis/MLModelRunner.h"
-#include "llvm/Analysis/NoInferenceModelRunner.h"
 #include "llvm/CodeGen/LiveInterval.h"
 #include "llvm/CodeGen/LiveIntervals.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
@@ -54,7 +52,6 @@
 #include "llvm/InitializePasses.h"
 #include "llvm/MC/LaneBitmask.h"
 #include "llvm/Pass.h"
-#include "llvm/Support/Casting.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/Debug.h"
@@ -295,70 +292,6 @@ static cl::opt<bool> MISchedSortResourcesInTrace(
 static cl::opt<unsigned>
     MIResourceCutOff("misched-resource-cutoff", cl::Hidden,
                      cl::desc("Number of intervals to track"), cl::init(10));
-
-static cl::opt<GenericScheduler::SchedMode>
-    EnabledMode("sched-mode", cl::Hidden,
-                cl::init(GenericScheduler::SchedMode::Default),
-                cl::desc("Set ML Sched Mode"),
-                cl::values(clEnumValN(GenericScheduler::SchedMode::Default,
-                                      "default", "Default"),
-                           clEnumValN(GenericScheduler::SchedMode::Release,
-                                      "release", "precompiled"),
-                           clEnumValN(GenericScheduler::SchedMode::Development,
-                                      "development", "for training")));
-
-static cl::opt<std::string> MLSchedTrainingLog(
-    "mlsched-training-log", cl::Hidden,
-    cl::desc("Training log for the instruction scheduling model"));
-
-static cl::opt<std::string> MLModelUnderTraining(
-    "mlsched-model", cl::Hidden,
-    cl::desc("The model being trained for instruction scheduling"));
-
-#define SchedDecisionName "index_to_sched"
-static const TensorSpec DecisionSpec =
-    TensorSpec::createSpec<int64_t>(SchedDecisionName, {1});
-static const TensorSpec Reward = TensorSpec::createSpec<float>("reward", {1});
-
-#define _DECL_FEATURES(type, name, shape, _)                                   \
-  TensorSpec::createSpec<type>(#name, shape),
-#define _DECL_ACTION_FEATURES(type, name, shape, _)                            \
-  TensorSpec::createSpec<type>(std::string("action_") + #name, shape),
-
-
-// --------------
-// Features table
-// --------------
-static const int MaxNumInstCandidates = 64 * 2;
-static const std::vector<int64_t> PerInstrFeatureShape{1, MaxNumInstCandidates};
-#define SCHED_FEATURES_LIST(M)                                          \
-  M(int64_t, mask, PerInstrFeatureShape,				\
-    "boolean values, 1 if the position is valid")			\
-  M(int64_t, is_top, PerInstrFeatureShape,                              \
-    "boolean values, 1 if the instruction is from Top Queue")           \
-  M(int64_t, is_bot, PerInstrFeatureShape,                              \
-    "boolean values, 1 if the instruction is from Bot Queue")           \
-  M(int64_t, bias_phy_regs, PerInstrFeatureShape,                       \
-    "records the value of biasPhysReg")                                 \
-  M(int64_t, excess_unit_inc, PerInstrFeatureShape, "")                 \
-  M(int64_t, critical_max_unit_inc, PerInstrFeatureShape, "")
-
-// Named features index.
-enum SchedFeatureIDs {
-#define _FEATURE_IDX_SIMPLE(_, name, __, ___) name
-#define _FEATURE_IDX(A, B, C, D) _FEATURE_IDX_SIMPLE(A, B, C, D),
-  SCHED_FEATURES_LIST(_FEATURE_IDX) FeatureCount,
-#undef _FEATURE_IDX
-#undef _FEATURE_IDX_SIMPLE
-};
-
-
-template <typename T> static size_t getTotalSize(const std::vector<int64_t> &Shape) {
-  size_t Ret = sizeof(T);
-  for (const auto V : Shape)
-    Ret *= V;
-  return Ret;
-}
 
 // DAG subtrees must have at least this many nodes.
 static const unsigned MinSubtreeSize = 8;
@@ -3326,59 +3259,6 @@ LLVM_DUMP_METHOD void SchedBoundary::dumpScheduledState() const {
 // GenericScheduler - Generic implementation of MachineSchedStrategy.
 //===----------------------------------------------------------------------===//
 
-GenericScheduler::GenericScheduler(const MachineSchedContext *C)
-    : GenericSchedulerBase(C), Top(SchedBoundary::TopQID, "TopQ"),
-      Bot(SchedBoundary::BotQID, "BotQ"), Mode(EnabledMode) {
-
-  if (Mode == SchedMode::Default)
-    return;
-
-  if (Mode == SchedMode::Development &&
-      MLModelUnderTraining.empty() && MLSchedTrainingLog.empty()) {
-    Log = nullptr;
-    Runner = nullptr;
-    LLVM_DEBUG(dbgs() << "[ML GenericScheduler] in development mode, logging or "
-	       << "a training model shuold be provided.");
-    return;
-  }
-
-  std::vector<TensorSpec> InputFeatures = {SCHED_FEATURES_LIST(_DECL_FEATURES)};
-  if (Mode == SchedMode::Release) {
-    Log = nullptr;
-    Runner = nullptr;
-    LLVM_DEBUG(dbgs() << "[ML GenericScheduler] release mode hasn't been implemented.");
-    return;
-  }
-
-  // Mode == SchedMode::Development
-  if (MLModelUnderTraining.empty())
-    Runner = std::make_unique<NoInferenceModelRunner>(C->MF->getFunction().getContext(),
-						      InputFeatures);
-  else
-    ; // Runner = ModelUnderTrainingRunner::createAndEnsureValid();
-
-  std::error_code EC;
-  auto OS = std::make_unique<raw_fd_ostream>(MLSchedTrainingLog, EC);
-  if (EC) {
-    LLVM_DEBUG(dbgs() << "[ML GenericScheduler] " << EC.message() << ":" << MLSchedTrainingLog);
-    return;
-  }
-
-  std::vector<TensorSpec> LFS = InputFeatures;
-  LFS.push_back(DecisionSpec);
-  Log = std::make_unique<Logger>(std::move(OS), LFS, Reward,
-				 /*IncludeReward*/ true);
-}
-
-void GenericScheduler::resetRunnerInput() {
-  LLVM_DEBUG(dbgs() << "[GenericScheduler::resetRunnerInput]\n");
-#define _RESET(TYPE, NAME, SHAPE, __)                            \
-  std::memset(Runner->getTensorUntyped(SchedFeatureIDs::NAME), 0, \
-              getTotalSize<Type>(SHAPE));
-  SCHED_FEATURES_LIST(_RESET)
-#undef _RESET
-}
-
 void GenericSchedulerBase::SchedCandidate::
 initResourceDelta(const ScheduleDAGMI *DAG,
                   const TargetSchedModel *SchedModel) {
@@ -3928,13 +3808,6 @@ void GenericScheduler::registerRoots() {
 }
 
 namespace llvm {
-// static int getPressureSetRank(const PressureChange &TryP,
-//                               const TargetRegisterInfo *TRI,
-//                               const MachineFunction &MF) {
-
-//   return TryP.isValid() ? TRI->getRegPressureSetScore(MF, TryP.getPSetOrMax()) :
-//     std::numeric_limits<int>::max();
-// }
 bool tryPressure(const PressureChange &TryP,
                  const PressureChange &CandP,
                  GenericSchedulerBase::SchedCandidate &TryCand,
@@ -4059,39 +3932,6 @@ void GenericScheduler::initCandidate(SchedCandidate &Cand, SUnit *SU,
              << Cand.RPDelta.Excess.getUnitInc() << "\n");
 }
 
-bool GenericScheduler::tryCandidateAndExtractFeatures(SchedCandidate &Cand,
-                                                      SchedCandidate &TryCand,
-                                                      SchedBoundary *Zone,
-                                                      int64_t Pos) const {
-  if (Log == nullptr)
-    return tryCandidate(Cand, TryCand, Zone);
-
-  LLVM_DEBUG(dbgs() << "[ML tryCand & extractFeatures] Try extracting... \n");
-  // Set the features at the column 'Idx'.
-  // if Candidate is from Bot, Idx = 2 * Pos
-  // if Candidate is from Top, Idx = 2 * Pos + 1
-  LLVM_DEBUG(dbgs() << "Index: " << 2 * Pos + TryCand.AtTop << ", ");
-  LLVM_DEBUG(dbgs() << "TryCand.AtTop: " << TryCand.AtTop << "\n");
-  LLVM_DEBUG(dbgs() << "RPDelta.Excess.UnitInc: " << TryCand.RPDelta.Excess.getUnitInc() << ", ");
-  LLVM_DEBUG(dbgs() << "RPDelta.Excess.UnitInc: " << TryCand.RPDelta.CriticalMax.getUnitInc() << "\n");
-#define SET(ID, TYPE, VAL, ISTOP)                                       \
-  do {                                                                  \
-    Runner->getTensor<TYPE>(SchedFeatureIDs::ID)[2 * Pos + ISTOP] = static_cast<TYPE>(VAL); \
-  } while (false)
-  SET(mask, int64_t, 1, TryCand.AtTop);
-  SET(is_top, int64_t, TryCand.AtTop, TryCand.AtTop);
-  SET(is_bot, int64_t, !TryCand.AtTop, TryCand.AtTop);
-  SET(bias_phy_regs, int64_t, biasPhysReg(TryCand.SU, TryCand.AtTop), TryCand.AtTop);
-  SET(excess_unit_inc, int64_t, TryCand.RPDelta.Excess.getUnitInc(), TryCand.AtTop);
-  SET(critical_max_unit_inc, int64_t, TryCand.RPDelta.CriticalMax.getUnitInc(), TryCand.AtTop);
-#undef SET
-
-  LLVM_DEBUG(dbgs() << "!!! Finished extracting features!\n");
-
-  // Finish extracting features of TryCand, and return back the value of tryCandidate
-  return tryCandidate(Cand, TryCand, Zone);
-}
-
 /// Apply a set of heuristics to a new candidate. Heuristics are currently
 /// hierarchical. This may be more efficient than a graduated cost model because
 /// we don't need to evaluate all aspects of the model for each node in the
@@ -4169,7 +4009,8 @@ bool GenericScheduler::tryCandidate(SchedCandidate &Cand,
   if (SameBoundary) {
     // Weak edges are for clustering and other constraints.
     if (tryLess(getWeakLeft(TryCand.SU, TryCand.AtTop),
-                getWeakLeft(Cand.SU, Cand.AtTop), TryCand, Cand, Weak))
+                getWeakLeft(Cand.SU, Cand.AtTop),
+                TryCand, Cand, Weak))
       return TryCand.Reason != NoCand;
   }
 
@@ -4227,7 +4068,7 @@ void GenericScheduler::pickNodeFromQueue(SchedBoundary &Zone,
     initCandidate(TryCand, SU, Zone.isTop(), RPTracker, TempTracker);
     // Pass SchedBoundary only when comparing nodes from the same boundary.
     SchedBoundary *ZoneArg = Cand.AtTop == TryCand.AtTop ? &Zone : nullptr;
-    if (tryCandidateAndExtractFeatures(Cand, TryCand, ZoneArg, Q.getPos(SU))) {
+    if (tryCandidate(Cand, TryCand, ZoneArg)) {
       // Initialize resource delta if needed in case future heuristics query it.
       if (TryCand.ResDelta == SchedResourceDelta())
         TryCand.initResourceDelta(DAG, SchedModel);
@@ -4238,9 +4079,7 @@ void GenericScheduler::pickNodeFromQueue(SchedBoundary &Zone,
 }
 
 /// Pick the best candidate node from either the top or bottom queue.
-SUnit *GenericScheduler::pickNodeBidirectional(bool &IsTopNode,
-                                               int64_t &SchedIndex,
-                                               int8_t &PickedNodeFromTop) {
+SUnit *GenericScheduler::pickNodeBidirectional(bool &IsTopNode) {
   // Schedule as far as possible in the direction of no choice. This is most
   // efficient, but also provides the best heuristics for CriticalPSets.
   if (SUnit *SU = Bot.pickOnlyChoice()) {
@@ -4310,11 +4149,6 @@ SUnit *GenericScheduler::pickNodeBidirectional(bool &IsTopNode,
   if (tryCandidate(Cand, TopCand, nullptr)) {
     Cand.setBest(TopCand);
     LLVM_DEBUG(traceCandidate(Cand));
-    SchedIndex = Top.Available.getPos(Cand.SU);
-    PickedNodeFromTop = 1;
-  } else {
-    SchedIndex = Bot.Available.getPos(Cand.SU);
-    PickedNodeFromTop = 0;
   }
 
   IsTopNode = Cand.AtTop;
@@ -4329,11 +4163,7 @@ SUnit *GenericScheduler::pickNode(bool &IsTopNode) {
            Bot.Available.empty() && Bot.Pending.empty() && "ReadyQ garbage");
     return nullptr;
   }
-  if (Log != nullptr)
-    resetRunnerInput();
   SUnit *SU;
-  int64_t SchedIndex = -1;
-  int8_t PickedNodeFromTop = -1;
   do {
     if (RegionPolicy.OnlyTopDown) {
       SU = Top.pickOnlyChoice();
@@ -4358,7 +4188,7 @@ SUnit *GenericScheduler::pickNode(bool &IsTopNode) {
       }
       IsTopNode = false;
     } else {
-      SU = pickNodeBidirectional(IsTopNode, SchedIndex, PickedNodeFromTop);
+      SU = pickNodeBidirectional(IsTopNode);
     }
   } while (SU->isScheduled);
 
@@ -4384,11 +4214,6 @@ SUnit *GenericScheduler::pickNode(bool &IsTopNode) {
 
   LLVM_DEBUG(dbgs() << "Scheduling SU(" << SU->NodeNum << ") "
                     << *SU->getInstr());
-
-  if (Log != nullptr) {
-    LLVM_DEBUG(dbgs() << "[GenericScheduler::pickNode] Log data for Machine Learning (ML)\n");
-    logMLFeatures(SchedIndex, PickedNodeFromTop);
-  }
 
   if (IsTopNode) {
     if (SU->NodeNum == TopIdx++)
@@ -4446,27 +4271,6 @@ void GenericScheduler::schedNode(SUnit *SU, bool IsTopNode) {
     if (SU->hasPhysRegDefs)
       reschedulePhysReg(SU, false);
   }
-}
-
-void GenericScheduler::logMLFeatures(int64_t SchedIndex, int8_t PickedNodeFromTop) {
-  //  if (Log->hasObservationInProgress())
-  //    Log->logReward<float>(0.0);
-  if (SchedIndex < 0)
-    return;
-
-  Log->startObservation();
-  size_t CurrentFeature = 0;
-  for (; CurrentFeature < SchedFeatureIDs::FeatureCount; ++CurrentFeature) {
-    Log->logTensorValue(CurrentFeature,
-                        reinterpret_cast<const char *>(getRunner().getTensorUntyped(CurrentFeature)));
-  }
-  // Log the decision (index of ready queue) // may need to add direction (top/bottom)
-  LLVM_DEBUG(dbgs() << "logMLFeatures: schedule index = " << SchedIndex << "\n");
-  SchedIndex = SchedIndex * 2 + PickedNodeFromTop;
-  Log->logTensorValue(CurrentFeature, reinterpret_cast<const char *>(&SchedIndex));
-  Log->endObservation();
-
-  Log->logReward<float>(0.0);
 }
 
 /// Create the standard converging machine scheduler. This will be used as the

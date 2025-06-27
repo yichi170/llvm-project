@@ -29,6 +29,7 @@
 #include "SIMachineFunctionInfo.h"
 #include "Utils/AMDGPUBaseInfo.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Analysis/NoInferenceModelRunner.h"
 #include "llvm/CodeGen/MachineScheduler.h"
 #include "llvm/CodeGen/RegisterClassInfo.h"
 #include "llvm/MC/LaneBitmask.h"
@@ -74,6 +75,26 @@ static cl::opt<bool> GCNTrackers(
     cl::desc("Use the AMDGPU specific RPTrackers during scheduling"),
     cl::init(false));
 
+// Machine Learning Guided Optimization
+static cl::opt<GCNSchedStrategy::SchedMode>
+    EnabledMode("sched-mode", cl::Hidden,
+                cl::init(GCNSchedStrategy::SchedMode::Default),
+                cl::desc("Set ML Sched Mode"),
+                cl::values(clEnumValN(GCNSchedStrategy::SchedMode::Default,
+                                      "default", "Default"),
+                           clEnumValN(GCNSchedStrategy::SchedMode::Release,
+                                      "release", "precompiled"),
+                           clEnumValN(GCNSchedStrategy::SchedMode::Development,
+                                      "development", "for training")));
+
+static cl::opt<std::string> MLSchedTrainingLog(
+    "mlsched-training-log", cl::Hidden,
+    cl::desc("Training log for the instruction scheduling model"));
+
+static cl::opt<std::string> MLModelUnderTraining(
+    "mlsched-model", cl::Hidden,
+    cl::desc("The model being trained for instruction scheduling"));
+
 const unsigned ScheduleMetrics::ScaleFactor = 100;
 
 // might need to modify the correct value.
@@ -82,10 +103,102 @@ const unsigned ScheduleMetrics::ScaleFactor = 100;
 // name of the output tensor. The contract with the model is that the output
 // will be guaranteed to be to a mask == 1 position. Using a macro here to
 // avoid 'not used' warnings (and keep cond compilation to a minimum)
+#define SchedDecisionName "index_to_sched"
+static const TensorSpec DecisionSpec =
+    TensorSpec::createSpec<int64_t>(SchedDecisionName, {1});
+static const TensorSpec Reward = TensorSpec::createSpec<float>("reward", {1});
+
+#define _DECL_FEATURES(type, name, shape, _)                                   \
+  TensorSpec::createSpec<type>(#name, shape),
+#define _DECL_ACTION_FEATURES(type, name, shape, _)                            \
+  TensorSpec::createSpec<type>(std::string("action_") + #name, shape),
+
+// --------------
+// Features table
+// --------------
+static const int MaxNumInstCandidates = 64 * 2;
+static const std::vector<int64_t> PerInstrFeatureShape{1, MaxNumInstCandidates};
+#define SCHED_FEATURES_LIST(M)                                          \
+  M(int64_t, mask, PerInstrFeatureShape,				\
+    "boolean values, 1 if the position is valid")			\
+  M(int64_t, is_top, PerInstrFeatureShape,                              \
+    "boolean values, 1 if the instruction is from Top Queue")           \
+  M(int64_t, is_bot, PerInstrFeatureShape,                              \
+    "boolean values, 1 if the instruction is from Bot Queue")           \
+  M(int64_t, bias_phy_regs, PerInstrFeatureShape,                       \
+    "records the value of biasPhysReg")                                 \
+  M(int64_t, excess_unit_inc, PerInstrFeatureShape, "")                 \
+  M(int64_t, critical_max_unit_inc, PerInstrFeatureShape, "")
+
+// Named features index.
+enum SchedFeatureIDs {
+#define _FEATURE_IDX_SIMPLE(_, name, __, ___) name
+#define _FEATURE_IDX(A, B, C, D) _FEATURE_IDX_SIMPLE(A, B, C, D),
+  SCHED_FEATURES_LIST(_FEATURE_IDX) FeatureCount,
+#undef _FEATURE_IDX
+#undef _FEATURE_IDX_SIMPLE
+};
+
+
+template <typename T> static size_t getTotalSize(const std::vector<int64_t> &Shape) {
+  size_t Ret = sizeof(T);
+  for (const auto V : Shape)
+    Ret *= V;
+  return Ret;
+}
+
+void GCNSchedStrategy::resetRunnerInput() {
+  LLVM_DEBUG(dbgs() << "[GCNSchedStrategy::resetRunnerInput]\n");
+#define _RESET(TYPE, NAME, SHAPE, __)                            \
+  std::memset(Runner->getTensorUntyped(SchedFeatureIDs::NAME), 0, \
+              getTotalSize<Type>(SHAPE));
+  SCHED_FEATURES_LIST(_RESET)
+#undef _RESET
+}
 
 GCNSchedStrategy::GCNSchedStrategy(const MachineSchedContext *C)
     : GenericScheduler(C), TargetOccupancy(0), MF(nullptr),
-      DownwardTracker(*C->LIS), UpwardTracker(*C->LIS), HasHighPressure(false) {}
+      DownwardTracker(*C->LIS), UpwardTracker(*C->LIS), HasHighPressure(false),
+      Mode(EnabledMode) {
+  if (Mode == SchedMode::Default)
+    return;
+
+  if (Mode == SchedMode::Development &&
+      MLModelUnderTraining.empty() && MLSchedTrainingLog.empty()) {
+    Log = nullptr;
+    Runner = nullptr;
+    LLVM_DEBUG(dbgs() << "[ML GCNSchedStrategy] in development mode, logging or "
+	       << "a training model shuold be provided.");
+    return;
+  }
+
+  std::vector<TensorSpec> InputFeatures = {SCHED_FEATURES_LIST(_DECL_FEATURES)};
+  if (Mode == SchedMode::Release) {
+    Log = nullptr;
+    Runner = nullptr;
+    LLVM_DEBUG(dbgs() << "[ML GCNSchedStrategy] release mode hasn't been implemented.");
+    return;
+  }
+
+  // Mode == SchedMode::Development
+  if (MLModelUnderTraining.empty())
+    Runner = std::make_unique<NoInferenceModelRunner>(C->MF->getFunction().getContext(),
+						      InputFeatures);
+  // else
+    // Runner = ModelUnderTrainingRunner::createAndEnsureValid();
+
+  std::error_code EC;
+  auto OS = std::make_unique<raw_fd_ostream>(MLSchedTrainingLog, EC);
+  if (EC) {
+    LLVM_DEBUG(dbgs() << "[ML GCNSchedStrategy] " << EC.message() << ":" << MLSchedTrainingLog);
+    return;
+  }
+
+  std::vector<TensorSpec> LFS = InputFeatures;
+  LFS.push_back(DecisionSpec);
+  Log = std::make_unique<Logger>(std::move(OS), LFS, Reward,
+				 /*IncludeReward*/ true);
+}
 
 void GCNSchedStrategy::initialize(ScheduleDAGMI *DAG) {
   GenericScheduler::initialize(DAG);
@@ -334,6 +447,40 @@ void GCNSchedStrategy::initCandidate(SchedCandidate &Cand, SUnit *SU,
   }
 }
 
+
+bool GCNSchedStrategy::tryCandidateAndExtractFeatures(SchedCandidate &Cand,
+                                                      SchedCandidate &TryCand,
+                                                      SchedBoundary *Zone,
+                                                      int64_t Pos) const {
+  if (Log == nullptr)
+    return tryCandidate(Cand, TryCand, Zone);
+
+  LLVM_DEBUG(dbgs() << "[ML tryCand & extractFeatures] Try extracting... \n");
+  // Set the features at the column 'Idx'.
+  // if Candidate is from Bot, Idx = 2 * Pos
+  // if Candidate is from Top, Idx = 2 * Pos + 1
+  LLVM_DEBUG(dbgs() << "Index: " << 2 * Pos + TryCand.AtTop << ", ");
+  LLVM_DEBUG(dbgs() << "TryCand.AtTop: " << TryCand.AtTop << "\n");
+  LLVM_DEBUG(dbgs() << "RPDelta.Excess.UnitInc: " << TryCand.RPDelta.Excess.getUnitInc() << ", ");
+  LLVM_DEBUG(dbgs() << "RPDelta.Excess.UnitInc: " << TryCand.RPDelta.CriticalMax.getUnitInc() << "\n");
+#define SET(ID, TYPE, VAL, ISTOP)                                       \
+  do {                                                                  \
+    Runner->getTensor<TYPE>(SchedFeatureIDs::ID)[2 * Pos + ISTOP] = static_cast<TYPE>(VAL); \
+  } while (false)
+  SET(mask, int64_t, 1, TryCand.AtTop);
+  SET(is_top, int64_t, TryCand.AtTop, TryCand.AtTop);
+  SET(is_bot, int64_t, !TryCand.AtTop, TryCand.AtTop);
+  SET(bias_phy_regs, int64_t, biasPhysReg(TryCand.SU, TryCand.AtTop), TryCand.AtTop);
+  SET(excess_unit_inc, int64_t, TryCand.RPDelta.Excess.getUnitInc(), TryCand.AtTop);
+  SET(critical_max_unit_inc, int64_t, TryCand.RPDelta.CriticalMax.getUnitInc(), TryCand.AtTop);
+#undef SET
+
+  LLVM_DEBUG(dbgs() << "!!! Finished extracting features!\n");
+
+  // Finish extracting features of TryCand, and return back the value of tryCandidate
+  return tryCandidate(Cand, TryCand, Zone);
+}
+
 // This function is mostly cut and pasted from
 // GenericScheduler::pickNodeFromQueue()
 void GCNSchedStrategy::pickNodeFromQueue(SchedBoundary &Zone,
@@ -341,8 +488,6 @@ void GCNSchedStrategy::pickNodeFromQueue(SchedBoundary &Zone,
                                          const RegPressureTracker &RPTracker,
                                          SchedCandidate &Cand,
                                          bool IsBottomUp) {
-  // return GenericScheduler::pickNodeFromQueue(Zone, ZonePolicy, RPTracker, Cand);
-
   const SIRegisterInfo *SRI = static_cast<const SIRegisterInfo *>(TRI);
   ArrayRef<unsigned> Pressure = RPTracker.getRegSetPressureAtPos();
   unsigned SGPRPressure = 0;
@@ -474,8 +619,10 @@ SUnit *GCNSchedStrategy::pickNode(bool &IsTopNode) {
            Bot.Available.empty() && Bot.Pending.empty() && "ReadyQ garbage");
     return nullptr;
   }
+
   if (Log != nullptr)
     resetRunnerInput();
+
   SUnit *SU;
   int64_t SchedIndex = -1;
   int8_t PickedNodeFromTop = -1;
@@ -489,6 +636,8 @@ SUnit *GCNSchedStrategy::pickNode(bool &IsTopNode) {
                           /*IsBottomUp=*/false);
         assert(TopCand.Reason != NoCand && "failed to find a candidate");
         SU = TopCand.SU;
+	SchedIndex = Top.Available.getPos(SU);
+	PickedNodeFromTop = 1;
       }
       IsTopNode = true;
     } else if (RegionPolicy.OnlyBottomUp) {
@@ -500,6 +649,8 @@ SUnit *GCNSchedStrategy::pickNode(bool &IsTopNode) {
                           /*IsBottomUp=*/true);
         assert(BotCand.Reason != NoCand && "failed to find a candidate");
         SU = BotCand.SU;
+	SchedIndex = Bot.Available.getPos(SU);
+	PickedNodeFromTop = 0;
       }
       IsTopNode = false;
     } else {
@@ -519,8 +670,30 @@ SUnit *GCNSchedStrategy::pickNode(bool &IsTopNode) {
 
   LLVM_DEBUG(dbgs() << "Scheduling SU(" << SU->NodeNum << ") "
                     << *SU->getInstr());
-
   return SU;
+}
+
+void GCNSchedStrategy::logMLFeatures(int64_t SchedIndex, int8_t PickedNodeFromTop) {
+  //  if (Log->hasObservationInProgress())
+  //    Log->logReward<float>(0.0);
+  LLVM_DEBUG(dbgs() << "[GCNSchedStrategy::logMLFeatures] schedule index: "
+	     << SchedIndex << "\n");
+  if (SchedIndex < 0) {
+    return;
+  }
+
+  Log->startObservation();
+  size_t CurrentFeature = 0;
+  for (; CurrentFeature < SchedFeatureIDs::FeatureCount; ++CurrentFeature) {
+    Log->logTensorValue(CurrentFeature,
+                        reinterpret_cast<const char *>(getRunner().getTensorUntyped(CurrentFeature)));
+  }
+  // Log the decision (index of ready queue) // may need to add direction (top/bottom)
+  SchedIndex = SchedIndex * 2 + PickedNodeFromTop;
+  Log->logTensorValue(CurrentFeature, reinterpret_cast<const char *>(&SchedIndex));
+  Log->endObservation();
+
+  Log->logReward<float>(0.0);
 }
 
 void GCNSchedStrategy::schedNode(SUnit *SU, bool IsTopNode) {

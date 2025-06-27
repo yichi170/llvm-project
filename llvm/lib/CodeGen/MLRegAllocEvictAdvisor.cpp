@@ -532,7 +532,6 @@ public:
     }
     if (TrainingLog.empty())
       return;
-    // ModelUndertraining finishes initialization of DevelopmentModeEvictionAdvisorProvider
     std::error_code EC;
     auto OS = std::make_unique<raw_fd_ostream>(TrainingLog, EC);
     if (EC) {

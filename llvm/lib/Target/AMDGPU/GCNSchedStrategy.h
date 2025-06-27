@@ -20,6 +20,13 @@
 #include "llvm/CodeGen/MachineScheduler.h"
 #include <cstdint>
 
+#include "llvm/Analysis/InteractiveModelRunner.h"
+#include "llvm/Analysis/MLModelRunner.h"
+#if defined(LLVM_HAVE_TF_AOT_REGALLOCEVICTMODEL) || defined(LLVM_HAVE_TFLITE)
+#include "llvm/Analysis/ModelUnderTrainingRunner.h"
+#include "llvm/Analysis/Utils/TrainingLogger.h"
+#endif
+
 namespace llvm {
 
 class SIMachineFunctionInfo;
@@ -45,6 +52,9 @@ raw_ostream &operator<<(raw_ostream &OS, const GCNSchedStageID &StageID);
 /// heuristics to determine excess/critical pressure sets.
 class GCNSchedStrategy : public GenericScheduler {
 protected:
+  bool tryCandidateAndExtractFeatures(SchedCandidate &Cand, SchedCandidate &TryCand,
+				      SchedBoundary *Zone, int64_t Pos = -1) const;
+
   SUnit *pickNodeBidirectional(bool &IsTopNode, int64_t &SchedIndex, int8_t &PickedNodeFromBot);
 
   void pickNodeFromQueue(SchedBoundary &Zone, const CandPolicy &ZonePolicy,
@@ -55,6 +65,13 @@ protected:
                      const RegPressureTracker &RPTracker,
                      const SIRegisterInfo *SRI, unsigned SGPRPressure,
                      unsigned VGPRPressure, bool IsBottomUp);
+
+  
+  const MLModelRunner &getRunner() const { return *Runner; }
+
+  void resetRunnerInput();
+
+  void logMLFeatures(int64_t SchedIndex, int8_t PickedNodeFromTop);
 
   std::vector<unsigned> Pressure;
 
@@ -79,6 +96,10 @@ protected:
 
   // GCN RP Tracker for botttom-up scheduling
   mutable GCNUpwardRPTracker UpwardTracker;
+
+  // Machine Learning Guided Instruction Scheduling
+  std::unique_ptr<MLModelRunner> Runner;
+  std::unique_ptr<Logger> Log;
 
 public:
   // schedule() have seen register pressure over the critical limits and had to
@@ -108,6 +129,8 @@ public:
 
   unsigned VGPRLimitBias = 0;
 
+  enum class SchedMode : int { Default, Release, Development };
+
   GCNSchedStrategy(const MachineSchedContext *C);
 
   SUnit *pickNode(bool &IsTopNode) override;
@@ -132,6 +155,9 @@ public:
   GCNDownwardRPTracker *getDownwardTracker() { return &DownwardTracker; }
 
   GCNUpwardRPTracker *getUpwardTracker() { return &UpwardTracker; }
+
+private:
+    const SchedMode Mode;
 };
 
 /// The goal of this scheduling strategy is to maximize kernel occupancy (i.e.
