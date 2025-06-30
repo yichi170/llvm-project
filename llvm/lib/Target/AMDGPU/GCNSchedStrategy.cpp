@@ -37,6 +37,7 @@
 #include <cstdint>
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/IR/LLVMContext.h"
 #include <memory>
 #include <vector>
 
@@ -110,7 +111,7 @@ static const TensorSpec Reward = TensorSpec::createSpec<float>("reward", {1});
 
 #define _DECL_FEATURES(type, name, shape, _)                                   \
   TensorSpec::createSpec<type>(#name, shape),
-#define _DECL_ACTION_FEATURES(type, name, shape, _)                            \
+#define _DECL_TRAIN_FEATURES(type, name, shape, _)                             \
   TensorSpec::createSpec<type>(std::string("action_") + #name, shape),
 
 // --------------
@@ -118,17 +119,23 @@ static const TensorSpec Reward = TensorSpec::createSpec<float>("reward", {1});
 // --------------
 static const int MaxNumInstCandidates = 64 * 2;
 static const std::vector<int64_t> PerInstrFeatureShape{1, MaxNumInstCandidates};
-#define SCHED_FEATURES_LIST(M)                                          \
-  M(int64_t, mask, PerInstrFeatureShape,				\
-    "boolean values, 1 if the position is valid")			\
-  M(int64_t, is_top, PerInstrFeatureShape,                              \
-    "boolean values, 1 if the instruction is from Top Queue")           \
-  M(int64_t, is_bot, PerInstrFeatureShape,                              \
-    "boolean values, 1 if the instruction is from Bot Queue")           \
-  M(int64_t, bias_phy_regs, PerInstrFeatureShape,                       \
-    "records the value of biasPhysReg")                                 \
-  M(int64_t, excess_unit_inc, PerInstrFeatureShape, "")                 \
-  M(int64_t, critical_max_unit_inc, PerInstrFeatureShape, "")
+#define SCHED_FEATURES_LIST(M)					\
+  M(int64_t, mask, PerInstrFeatureShape,			\
+    "boolean values, 1 if the position is valid")		\
+  M(int64_t, is_top, PerInstrFeatureShape,			\
+    "boolean values, 1 if the instruction is from Top Queue")	\
+  M(int64_t, is_bot, PerInstrFeatureShape,			\
+    "boolean values, 1 if the instruction is from Bot Queue")	\
+  M(int64_t, excess, PerInstrFeatureShape, "")			\
+  M(int64_t, current_max, PerInstrFeatureShape, "")		\
+  M(int64_t, critical_max, PerInstrFeatureShape, "")		\
+  M(int64_t, su_latency, PerInstrFeatureShape, "")		\
+  M(int64_t, su_height, PerInstrFeatureShape, "")		\
+  M(int64_t, su_depth, PerInstrFeatureShape, "")		\
+  M(int64_t, su_succs_left, PerInstrFeatureShape, "")		\
+  M(int64_t, su_preds_left, PerInstrFeatureShape, "")		\
+  M(int64_t, su_succs, PerInstrFeatureShape, "")		\
+  M(int64_t, su_preds, PerInstrFeatureShape, "")
 
 // Named features index.
 enum SchedFeatureIDs {
@@ -173,6 +180,12 @@ GCNSchedStrategy::GCNSchedStrategy(const MachineSchedContext *C)
   }
 
   std::vector<TensorSpec> InputFeatures = {SCHED_FEATURES_LIST(_DECL_FEATURES)};
+  std::vector<TensorSpec> TrainingInputFeatures = {
+    SCHED_FEATURES_LIST(_DECL_TRAIN_FEATURES)
+    TensorSpec::createSpec<float>("action_discount", {1}),
+    TensorSpec::createSpec<int32_t>("action_step_type", {1}),
+    TensorSpec::createSpec<float>("action_reward", {1})};
+
   if (Mode == SchedMode::Release) {
     Log = nullptr;
     Runner = nullptr;
@@ -181,21 +194,31 @@ GCNSchedStrategy::GCNSchedStrategy(const MachineSchedContext *C)
   }
 
   // Mode == SchedMode::Development
+  LLVMContext &Ctx = C->MF->getFunction().getContext();
   if (MLModelUnderTraining.empty())
-    Runner = std::make_unique<NoInferenceModelRunner>(C->MF->getFunction().getContext(),
-						      InputFeatures);
-  // else
-    // Runner = ModelUnderTrainingRunner::createAndEnsureValid();
+    Runner = std::make_unique<NoInferenceModelRunner>(Ctx, InputFeatures);
+  else
+    Runner = ModelUnderTrainingRunner::createAndEnsureValid(
+        Ctx, MLModelUnderTraining, SchedDecisionName, TrainingInputFeatures);
+  if (!Runner) {
+    Ctx.emitError("GCNSchedStrategy: could not set up the model runner");
+    return;
+  }
+  if (MLSchedTrainingLog.empty())
+    return;
 
   std::error_code EC;
   auto OS = std::make_unique<raw_fd_ostream>(MLSchedTrainingLog, EC);
   if (EC) {
-    LLVM_DEBUG(dbgs() << "[ML GCNSchedStrategy] " << EC.message() << ":" << MLSchedTrainingLog);
+    Ctx.emitError("[ML GCNSchedStrategy] " + EC.message() + ":" + MLSchedTrainingLog);
     return;
   }
 
   std::vector<TensorSpec> LFS = InputFeatures;
+  if (auto *MUTR = dyn_cast<ModelUnderTrainingRunner>(Runner.get()))
+    append_range(LFS, MUTR->extraOutputsForLoggingSpecs());
   LFS.push_back(DecisionSpec);
+
   Log = std::make_unique<Logger>(std::move(OS), LFS, Reward,
 				 /*IncludeReward*/ true);
 }
@@ -459,27 +482,56 @@ bool GCNSchedStrategy::tryCandidateAndExtractFeatures(SchedCandidate &Cand,
   // Set the features at the column 'Idx'.
   // if Candidate is from Bot, Idx = 2 * Pos
   // if Candidate is from Top, Idx = 2 * Pos + 1
-  LLVM_DEBUG(dbgs() << "Index: " << 2 * Pos + TryCand.AtTop << ", ");
+  int64_t Idx = 2 * Pos + TryCand.AtTop;
+  LLVM_DEBUG(dbgs() << "Index: " << Idx << ", ");
   LLVM_DEBUG(dbgs() << "TryCand.AtTop: " << TryCand.AtTop << "\n");
-  LLVM_DEBUG(dbgs() << "RPDelta.Excess.UnitInc: " << TryCand.RPDelta.Excess.getUnitInc() << ", ");
-  LLVM_DEBUG(dbgs() << "RPDelta.Excess.UnitInc: " << TryCand.RPDelta.CriticalMax.getUnitInc() << "\n");
-#define SET(ID, TYPE, VAL, ISTOP)                                       \
+  LLVM_DEBUG(dbgs() << "RPDelta.Excess: " << TryCand.RPDelta.Excess.getUnitInc() << ", ");
+  LLVM_DEBUG(dbgs() << "RPDelta.CurrentMax: " << TryCand.RPDelta.CurrentMax.getUnitInc() << ", ");
+  LLVM_DEBUG(dbgs() << "RPDelta.CriticalMax: " << TryCand.RPDelta.CriticalMax.getUnitInc() << "\n");
+  LLVM_DEBUG(dbgs() << "SU->Latency: " << TryCand.SU->Latency << ", ");
+  LLVM_DEBUG(dbgs() << "SU->getHeight: " << TryCand.SU->getHeight() << ", ");
+  LLVM_DEBUG(dbgs() << "SU->getDepth: " << TryCand.SU->getDepth() << "\n");
+  LLVM_DEBUG(dbgs() << "SU->NumSuccsLeft: " << TryCand.SU->NumSuccsLeft << ", ");
+  LLVM_DEBUG(dbgs() << "SU->NumPredsLeft: " << TryCand.SU->NumPredsLeft << "\n");
+  LLVM_DEBUG(dbgs() << "SU->NumSuccs: " << TryCand.SU->NumSuccs << ", ");
+  LLVM_DEBUG(dbgs() << "SU->NumPreds: " << TryCand.SU->NumPreds << "\n");
+
+#define SET(ID, TYPE, VAL)						\
   do {                                                                  \
-    Runner->getTensor<TYPE>(SchedFeatureIDs::ID)[2 * Pos + ISTOP] = static_cast<TYPE>(VAL); \
+    Runner->getTensor<TYPE>(SchedFeatureIDs::ID)[Idx] = static_cast<TYPE>(VAL); \
   } while (false)
-  SET(mask, int64_t, 1, TryCand.AtTop);
-  SET(is_top, int64_t, TryCand.AtTop, TryCand.AtTop);
-  SET(is_bot, int64_t, !TryCand.AtTop, TryCand.AtTop);
-  SET(bias_phy_regs, int64_t, biasPhysReg(TryCand.SU, TryCand.AtTop), TryCand.AtTop);
-  SET(excess_unit_inc, int64_t, TryCand.RPDelta.Excess.getUnitInc(), TryCand.AtTop);
-  SET(critical_max_unit_inc, int64_t, TryCand.RPDelta.CriticalMax.getUnitInc(), TryCand.AtTop);
+  SET(mask, int64_t, 1);
+  SET(is_top, int64_t, TryCand.AtTop);
+  SET(is_bot, int64_t, !TryCand.AtTop);
+  SET(excess, int64_t, TryCand.RPDelta.Excess.getUnitInc());
+  SET(current_max, int64_t, TryCand.RPDelta.CurrentMax.getUnitInc());
+  SET(critical_max, int64_t, TryCand.RPDelta.CriticalMax.getUnitInc());
+  SET(su_latency, int64_t, TryCand.SU->Latency);
+  SET(su_height, int64_t, TryCand.SU->getHeight());
+  SET(su_depth, int64_t, TryCand.SU->getDepth());
+  SET(su_succs_left, int64_t, TryCand.SU->NumSuccsLeft);
+  SET(su_preds_left, int64_t, TryCand.SU->NumPredsLeft);
+  SET(su_succs, int64_t, TryCand.SU->NumSuccs);
+  SET(su_preds, int64_t, TryCand.SU->NumPreds);
 #undef SET
 
-  LLVM_DEBUG(dbgs() << "!!! Finished extracting features!\n");
+  LLVM_DEBUG(dbgs() << "Finished extracting features!\n");
 
   // Finish extracting features of TryCand, and return back the value of tryCandidate
   return tryCandidate(Cand, TryCand, Zone);
 }
+
+// void GCNSchedStrategy::extractGlobalFeatures() {
+// #define SET(ID, TYPE, VAL)						\
+//  do {									\
+//    *Runner->getTensor<TYPE>(SchedFeatureIDs::ID) = static_cast<TYPE>(VAL); \
+//  } while (false)
+  //  SET(sgpr_critical_limit, int64_t, SGPRCriticalLimit);
+  //  SET(vgpr_critical_limit, int64_t, VGPRCriticalLimit);
+  //  SET(sgpr_excess_limit, int64_t, SGPRExcessLimit);
+  //  SET(vgpr_excess_limit, int64_t, VGPRExcessLimit);
+// #undef SET
+// }
 
 // This function is mostly cut and pasted from
 // GenericScheduler::pickNodeFromQueue()
