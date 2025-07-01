@@ -367,8 +367,7 @@ void GCNSchedStrategy::pickNodeFromQueue(SchedBoundary &Zone,
 
 // This function is mostly cut and pasted from
 // GenericScheduler::pickNodeBidirectional()
-SUnit *GCNSchedStrategy::pickNodeBidirectional(bool &IsTopNode,
-                                               int64_t &SchedIndex) {
+SUnit *GCNSchedStrategy::pickNodeBidirectional(bool &IsTopNode) {
   // Schedule as far as possible in the direction of no choice. This is most
   // efficient, but also provides the best heuristics for CriticalPSets.
   if (SUnit *SU = Bot.pickOnlyChoice()) {
@@ -440,9 +439,6 @@ SUnit *GCNSchedStrategy::pickNodeBidirectional(bool &IsTopNode,
   tryCandidate(Cand, TopCand, nullptr);
   if (TopCand.Reason != NoCand) {
     Cand.setBest(TopCand);
-    SchedIndex = Top.Available.getPos(Cand.SU);
-  } else {
-    SchedIndex = Bot.Available.getPos(Cand.SU);
   }
   LLVM_DEBUG(dbgs() << "Picking: "; traceCandidate(Cand););
 
@@ -459,7 +455,6 @@ SUnit *GCNSchedStrategy::pickNode(bool &IsTopNode) {
     return nullptr;
   }
   SUnit *SU;
-  int64_t SchedIndex = -1;
   do {
     if (RegionPolicy.OnlyTopDown) {
       SU = Top.pickOnlyChoice();
@@ -484,7 +479,7 @@ SUnit *GCNSchedStrategy::pickNode(bool &IsTopNode) {
       }
       IsTopNode = false;
     } else {
-      SU = pickNodeBidirectional(IsTopNode, SchedIndex);
+      SU = pickNodeBidirectional(IsTopNode);
     }
   } while (SU->isScheduled);
 

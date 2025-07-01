@@ -30,9 +30,11 @@ public:
 protected:
   const MLModelRunner &getRunner() const { return *Runner; }
 
+  SUnit *pickNodeBidirectional(bool &IsTopNode, bool &IsOnlyChoice);
+
   SUnit *pickNodeByModel();
 
-  void logMLFeatures(int64_t SchedIndex, bool &IsTopNode);
+  void logMLFeatures(int64_t SchedIndex);
 
   void extractFeatures(SchedBoundary &Zone, const CandPolicy &ZonePolicy,
 		       const RegPressureTracker &RPTracker, bool IsBottomUp);

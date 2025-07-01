@@ -93,7 +93,7 @@ template <typename T> static size_t getTotalSize(const std::vector<int64_t> &Sha
 }
 
 static void resetRunnerInput(MLModelRunner &Runner) {
-  LLVM_DEBUG(dbgs() << "[GCNSchedStrategy::resetRunnerInput]\n");
+  LLVM_DEBUG(dbgs() << "[resetRunnerInput]\n");
 #define _RESET(TYPE, NAME, SHAPE, __)                            \
   std::memset(Runner.getTensorUntyped(SchedFeatureIDs::NAME), 0, \
               getTotalSize<Type>(SHAPE));
@@ -160,7 +160,7 @@ SUnit *MLGCNSchedStrategy::pickNode(bool &IsTopNode) {
     resetRunnerInput(*Runner);
 
   SUnit *SU;
-  int64_t SchedIndex = -1;
+  bool IsOnlyChoice = false;
 
   CandPolicy BotPolicy;
   setPolicy(BotPolicy, false, Bot, &Top);
@@ -187,7 +187,6 @@ SUnit *MLGCNSchedStrategy::pickNode(bool &IsTopNode) {
                           /*IsBottomUp=*/false);
         assert(TopCand.Reason != NoCand && "failed to find a candidate");
         SU = TopCand.SU;
-	SchedIndex = Top.Available.getPos(SU);
       }
       IsTopNode = true;
     } else if (RegionPolicy.OnlyBottomUp) {
@@ -199,16 +198,18 @@ SUnit *MLGCNSchedStrategy::pickNode(bool &IsTopNode) {
                           /*IsBottomUp=*/true);
         assert(BotCand.Reason != NoCand && "failed to find a candidate");
         SU = BotCand.SU;
-	SchedIndex = Bot.Available.getPos(SU);
       }
       IsTopNode = false;
     } else {
-      SU = pickNodeBidirectional(IsTopNode, SchedIndex);
+      SU = pickNodeBidirectional(IsTopNode, IsOnlyChoice);
     }
   } while (SU->isScheduled);
 
-  if (Log != nullptr)
-    logMLFeatures(SchedIndex, IsTopNode);
+  if (Log != nullptr && !IsOnlyChoice) {
+    int64_t SchedIndex = IsTopNode ? Top.Available.getPos(SU) : Bot.Available.getPos(SU);
+    SchedIndex = SchedIndex * 2 + IsTopNode;
+    logMLFeatures(SchedIndex);
+  }
 
   if (SU->isTopReady())
     Top.removeReady(SU);
@@ -218,6 +219,20 @@ SUnit *MLGCNSchedStrategy::pickNode(bool &IsTopNode) {
   LLVM_DEBUG(dbgs() << "Scheduling SU(" << SU->NodeNum << ") "
                     << *SU->getInstr());
   return SU;
+}
+
+SUnit *MLGCNSchedStrategy::pickNodeBidirectional(bool &IsTopNode, bool &IsOnlyChoice) {
+  if (SUnit *SU = Bot.pickOnlyChoice()) {
+    IsTopNode = false;
+    IsOnlyChoice = true;
+    return SU;
+  }
+  if (SUnit *SU = Top.pickOnlyChoice()) {
+    IsTopNode = true;
+    IsOnlyChoice = true;
+    return SU;
+  }
+  return GCNSchedStrategy::pickNodeBidirectional(IsTopNode);
 }
 
 SUnit *MLGCNSchedStrategy::pickNodeByModel() {
@@ -233,14 +248,11 @@ SUnit *MLGCNSchedStrategy::pickNodeByModel() {
   }
 }
 
-void MLGCNSchedStrategy::logMLFeatures(int64_t SchedIndex, bool &IsTopNode) {
+void MLGCNSchedStrategy::logMLFeatures(int64_t SchedIndex) {
   //  if (Log->hasObservationInProgress())
   //    Log->logReward<float>(0.0);
   LLVM_DEBUG(dbgs() << "[MLGCNSchedStrategy::logMLFeatures] schedule index: "
 	     << SchedIndex << "\n");
-  if (SchedIndex < 0) {
-    return;
-  }
 
   Log->startObservation();
   size_t CurrentFeature = 0;
@@ -249,7 +261,6 @@ void MLGCNSchedStrategy::logMLFeatures(int64_t SchedIndex, bool &IsTopNode) {
                         reinterpret_cast<const char *>(getRunner().getTensorUntyped(CurrentFeature)));
   }
   // Log the decision (index of ready queue) // may need to add direction (top/bottom)
-  SchedIndex = SchedIndex * 2 + IsTopNode;
   Log->logTensorValue(CurrentFeature, reinterpret_cast<const char *>(&SchedIndex));
   Log->endObservation();
 
