@@ -52,10 +52,7 @@ raw_ostream &operator<<(raw_ostream &OS, const GCNSchedStageID &StageID);
 /// heuristics to determine excess/critical pressure sets.
 class GCNSchedStrategy : public GenericScheduler {
 protected:
-  bool tryCandidateAndExtractFeatures(SchedCandidate &Cand, SchedCandidate &TryCand,
-				      SchedBoundary *Zone, int64_t Pos = -1) const;
-
-  SUnit *pickNodeBidirectional(bool &IsTopNode, int64_t &SchedIndex, int8_t &PickedNodeFromBot);
+  SUnit *pickNodeBidirectional(bool &IsTopNode, int64_t &SchedIndex);
 
   void pickNodeFromQueue(SchedBoundary &Zone, const CandPolicy &ZonePolicy,
                          const RegPressureTracker &RPTracker,
@@ -65,13 +62,6 @@ protected:
                      const RegPressureTracker &RPTracker,
                      const SIRegisterInfo *SRI, unsigned SGPRPressure,
                      unsigned VGPRPressure, bool IsBottomUp);
-
-  
-  const MLModelRunner &getRunner() const { return *Runner; }
-
-  void resetRunnerInput();
-
-  void logMLFeatures(int64_t SchedIndex, int8_t PickedNodeFromTop);
 
   std::vector<unsigned> Pressure;
 
@@ -129,8 +119,6 @@ public:
 
   unsigned VGPRLimitBias = 0;
 
-  enum class SchedMode : int { Default, Release, Development };
-
   GCNSchedStrategy(const MachineSchedContext *C);
 
   SUnit *pickNode(bool &IsTopNode) override;
@@ -155,9 +143,6 @@ public:
   GCNDownwardRPTracker *getDownwardTracker() { return &DownwardTracker; }
 
   GCNUpwardRPTracker *getUpwardTracker() { return &UpwardTracker; }
-
-private:
-    const SchedMode Mode;
 };
 
 /// The goal of this scheduling strategy is to maximize kernel occupancy (i.e.
