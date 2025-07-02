@@ -23,6 +23,8 @@ class MLGCNSchedStrategy final: public GCNSchedStrategy {
 public:
   MLGCNSchedStrategy(const MachineSchedContext *C);
 
+  void initializeMLGO(const MachineSchedContext *C);
+
   SUnit *pickNode(bool &IsTopNode) override;
 
   enum class SchedMode : int { Default, Release, Development };

@@ -19,17 +19,6 @@
 
 using namespace llvm;
 
-static cl::opt<MLGCNSchedStrategy::SchedMode>
-    EnabledMode("sched-mode", cl::Hidden,
-                cl::init(MLGCNSchedStrategy::SchedMode::Default),
-                cl::desc("Set ML Sched Mode"),
-                cl::values(clEnumValN(MLGCNSchedStrategy::SchedMode::Default,
-                                      "default", "Default"),
-                           clEnumValN(MLGCNSchedStrategy::SchedMode::Release,
-                                      "release", "precompiled"),
-                           clEnumValN(MLGCNSchedStrategy::SchedMode::Development,
-                                      "development", "for training")));
-
 static cl::opt<std::string> MLSchedTrainingLog(
     "mlsched-training-log", cl::Hidden,
     cl::desc("Training log for the instruction scheduling model"));
@@ -60,6 +49,8 @@ static const std::vector<int64_t> PerInstrFeatureShape{1, MaxNumInstCandidates};
     "boolean values, 1 if the instruction is from Top Queue")	\
   M(int64_t, is_bot, PerInstrFeatureShape,			\
     "boolean values, 1 if the instruction is from Bot Queue")	\
+  M(int64_t, pos, PerInstrFeatureShape,				\
+    "position in the queue.")					\
   M(int64_t, excess, PerInstrFeatureShape, "")			\
   M(int64_t, current_max, PerInstrFeatureShape, "")		\
   M(int64_t, critical_max, PerInstrFeatureShape, "")		\
@@ -93,7 +84,7 @@ template <typename T> static size_t getTotalSize(const std::vector<int64_t> &Sha
 }
 
 static void resetRunnerInput(MLModelRunner &Runner) {
-  LLVM_DEBUG(dbgs() << "[resetRunnerInput]\n");
+  LLVM_DEBUG(dbgs() << "=== resetRunnerInput\n");
 #define _RESET(TYPE, NAME, SHAPE, __)                            \
   std::memset(Runner.getTensorUntyped(SchedFeatureIDs::NAME), 0, \
               getTotalSize<Type>(SHAPE));
@@ -101,12 +92,11 @@ static void resetRunnerInput(MLModelRunner &Runner) {
 #undef _RESET
 }
 
-MLGCNSchedStrategy::MLGCNSchedStrategy(const MachineSchedContext *C)
-    : GCNSchedStrategy(C), Mode(EnabledMode) {
+void MLGCNSchedStrategy::initializeMLGO(const MachineSchedContext *C) {
   if (MLModelUnderTraining.empty() && MLSchedTrainingLog.empty()) {
     Log = nullptr;
     Runner = nullptr;
-    LLVM_DEBUG(dbgs() << "[MLGCNSchedStrategy] In development mode, logging or "
+    LLVM_DEBUG(dbgs() << "=== MLGCNSchedStrategy: In development mode, logging or "
 	       << "a training model shuold be provided.");
     return;
   }
@@ -135,7 +125,7 @@ MLGCNSchedStrategy::MLGCNSchedStrategy(const MachineSchedContext *C)
   std::error_code EC;
   auto OS = std::make_unique<raw_fd_ostream>(MLSchedTrainingLog, EC);
   if (EC) {
-    Ctx.emitError("[MLGCNSchedStrategy] " + EC.message() + ":" + MLSchedTrainingLog);
+    Ctx.emitError("MLGCNSchedStrategy: " + EC.message() + ":" + MLSchedTrainingLog);
     return;
   }
 
@@ -251,7 +241,7 @@ SUnit *MLGCNSchedStrategy::pickNodeByModel() {
 void MLGCNSchedStrategy::logMLFeatures(int64_t SchedIndex) {
   //  if (Log->hasObservationInProgress())
   //    Log->logReward<float>(0.0);
-  LLVM_DEBUG(dbgs() << "[MLGCNSchedStrategy::logMLFeatures] schedule index: "
+  LLVM_DEBUG(dbgs() << "=== MLGCNSchedStrategy::logMLFeatures: schedule index: "
 	     << SchedIndex << "\n");
 
   Log->startObservation();
@@ -282,6 +272,7 @@ void MLGCNSchedStrategy::extractFeatures(SchedBoundary &Zone,
 
   ReadyQueue &Q = Zone.Available;
   int64_t Pos = 0;
+  LLVM_DEBUG(dbgs() << "=== MLGCNSchedStrategy::extractFeatures\n");
   for (SUnit *SU : Q) {
     SchedCandidate Cand(ZonePolicy);
     initCandidate(Cand, SU, Zone.isTop(), RPTracker, SRI, SGPRPressure,
@@ -292,21 +283,20 @@ void MLGCNSchedStrategy::extractFeatures(SchedBoundary &Zone,
 
 void MLGCNSchedStrategy::extractCandidateFeatures(SchedCandidate &TryCand,
 						  int64_t Pos) const {
-  LLVM_DEBUG(dbgs() << "[MLGCNSchedStrategy::extractFeatures]\n");
   // Set the features at the column 'Idx'.
   // if Candidate is from Bot, Idx = 2 * Pos
   // if Candidate is from Top, Idx = 2 * Pos + 1
   int64_t Idx = 2 * Pos + TryCand.AtTop;
-  LLVM_DEBUG(dbgs() << "Index: " << Idx << ", ");
-  LLVM_DEBUG(dbgs() << "TryCand.AtTop: " << TryCand.AtTop << "\n");
+  LLVM_DEBUG(dbgs() << "[Position in Q: " << Pos << "]\n");
+  LLVM_DEBUG(dbgs() << "    TryCand.AtTop: " << TryCand.AtTop << ", ");
   LLVM_DEBUG(dbgs() << "RPDelta.Excess: " << TryCand.RPDelta.Excess.getUnitInc() << ", ");
   LLVM_DEBUG(dbgs() << "RPDelta.CurrentMax: " << TryCand.RPDelta.CurrentMax.getUnitInc() << ", ");
   LLVM_DEBUG(dbgs() << "RPDelta.CriticalMax: " << TryCand.RPDelta.CriticalMax.getUnitInc() << "\n");
-  LLVM_DEBUG(dbgs() << "SU->Latency: " << TryCand.SU->Latency << ", ");
+  LLVM_DEBUG(dbgs() << "    SU->Latency: " << TryCand.SU->Latency << ", ");
   LLVM_DEBUG(dbgs() << "SU->getHeight: " << TryCand.SU->getHeight() << ", ");
   LLVM_DEBUG(dbgs() << "SU->getDepth: " << TryCand.SU->getDepth() << "\n");
-  LLVM_DEBUG(dbgs() << "SU->NumSuccsLeft: " << TryCand.SU->NumSuccsLeft << ", ");
-  LLVM_DEBUG(dbgs() << "SU->NumPredsLeft: " << TryCand.SU->NumPredsLeft << "\n");
+  LLVM_DEBUG(dbgs() << "    SU->NumSuccsLeft: " << TryCand.SU->NumSuccsLeft << ", ");
+  LLVM_DEBUG(dbgs() << "SU->NumPredsLeft: " << TryCand.SU->NumPredsLeft << ", ");
   LLVM_DEBUG(dbgs() << "SU->NumSuccs: " << TryCand.SU->NumSuccs << ", ");
   LLVM_DEBUG(dbgs() << "SU->NumPreds: " << TryCand.SU->NumPreds << "\n");
 
@@ -317,6 +307,7 @@ void MLGCNSchedStrategy::extractCandidateFeatures(SchedCandidate &TryCand,
   SET(mask, int64_t, 1);
   SET(is_top, int64_t, TryCand.AtTop);
   SET(is_bot, int64_t, !TryCand.AtTop);
+  SET(pos, int64_t, Pos);
   SET(excess, int64_t, TryCand.RPDelta.Excess.getUnitInc());
   SET(current_max, int64_t, TryCand.RPDelta.CurrentMax.getUnitInc());
   SET(critical_max, int64_t, TryCand.RPDelta.CriticalMax.getUnitInc());
@@ -328,12 +319,11 @@ void MLGCNSchedStrategy::extractCandidateFeatures(SchedCandidate &TryCand,
   SET(su_succs, int64_t, TryCand.SU->NumSuccs);
   SET(su_preds, int64_t, TryCand.SU->NumPreds);
 #undef SET
-
-  LLVM_DEBUG(dbgs() << "Finished extracting features!\n");
 }
 
 
 void MLGCNSchedStrategy::extractGlobalFeatures() {
+  LLVM_DEBUG(dbgs() << "=== MLGCNSchedStrategy::extractGlobalFeatures\n");
 #define SET(ID, TYPE, VAL)						\
   do {									\
     *Runner->getTensor<TYPE>(SchedFeatureIDs::ID) = static_cast<TYPE>(VAL); \

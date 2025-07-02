@@ -40,7 +40,8 @@ enum class GCNSchedStageID : unsigned {
   ClusteredLowOccupancyReschedule = 2,
   PreRARematerialize = 3,
   ILPInitialSchedule = 4,
-  MemoryClauseInitialSchedule = 5
+  MemoryClauseInitialSchedule = 5,
+  MLSchedule = 6
 };
 
 #ifndef NDEBUG
@@ -240,6 +241,7 @@ class GCNScheduleDAGMILive final : public ScheduleDAGMILive {
   friend class ClusteredLowOccStage;
   friend class PreRARematStage;
   friend class ILPInitialScheduleStage;
+  friend class MLScheduleStage;
   friend class RegionPressureMap;
 
   const GCNSubtarget &ST;
@@ -548,6 +550,14 @@ public:
 
   MemoryClauseInitialScheduleStage(GCNSchedStageID StageID,
                                    GCNScheduleDAGMILive &DAG)
+      : GCNSchedStage(StageID, DAG) {}
+};
+
+class MLScheduleStage : public GCNSchedStage {
+public:
+  bool shouldRevertScheduling(unsigned WavesAfter) override {return false; }
+
+  MLScheduleStage(GCNSchedStageID StageID, GCNScheduleDAGMILive &DAG)
       : GCNSchedStage(StageID, DAG) {}
 };
 

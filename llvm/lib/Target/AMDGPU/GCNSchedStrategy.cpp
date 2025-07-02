@@ -26,6 +26,7 @@
 #include "GCNSchedStrategy.h"
 #include "AMDGPUIGroupLP.h"
 #include "GCNRegPressure.h"
+#include "MLGCNSchedStrategy.h"
 #include "SIMachineFunctionInfo.h"
 #include "Utils/AMDGPUBaseInfo.h"
 #include "llvm/ADT/STLExtras.h"
@@ -67,6 +68,17 @@ static cl::opt<bool> GCNTrackers(
     "amdgpu-use-amdgpu-trackers", cl::Hidden,
     cl::desc("Use the AMDGPU specific RPTrackers during scheduling"),
     cl::init(false));
+
+static cl::opt<MLGCNSchedStrategy::SchedMode>
+    EnabledMode("sched-mode", cl::Hidden,
+                cl::init(MLGCNSchedStrategy::SchedMode::Default),
+                cl::desc("Set ML Sched Mode"),
+                cl::values(clEnumValN(MLGCNSchedStrategy::SchedMode::Default,
+                                      "default", "Default"),
+                           clEnumValN(MLGCNSchedStrategy::SchedMode::Release,
+                                      "release", "precompiled"),
+                           clEnumValN(MLGCNSchedStrategy::SchedMode::Development,
+                                      "development", "for training")));
 
 const unsigned ScheduleMetrics::ScaleFactor = 100;
 
@@ -543,6 +555,12 @@ GCNMaxILPSchedStrategy::GCNMaxILPSchedStrategy(const MachineSchedContext *C)
   SchedStages.push_back(GCNSchedStageID::ILPInitialSchedule);
 }
 
+MLGCNSchedStrategy::MLGCNSchedStrategy(const MachineSchedContext *C)
+    : GCNSchedStrategy(C), Mode(EnabledMode) {
+  SchedStages.push_back(GCNSchedStageID::MLSchedule);
+  initializeMLGO(C);
+}
+
 bool GCNMaxILPSchedStrategy::tryCandidate(SchedCandidate &Cand,
                                           SchedCandidate &TryCand,
                                           SchedBoundary *Zone) const {
@@ -795,6 +813,8 @@ GCNScheduleDAGMILive::createSchedStage(GCNSchedStageID SchedStageID) {
   case GCNSchedStageID::MemoryClauseInitialSchedule:
     return std::make_unique<MemoryClauseInitialScheduleStage>(SchedStageID,
                                                               *this);
+  case GCNSchedStageID::MLSchedule:
+    return std::make_unique<MLScheduleStage>(SchedStageID, *this);
   }
 
   llvm_unreachable("Unknown SchedStageID.");
@@ -1022,6 +1042,9 @@ raw_ostream &llvm::operator<<(raw_ostream &OS, const GCNSchedStageID &StageID) {
     break;
   case GCNSchedStageID::MemoryClauseInitialSchedule:
     OS << "Max memory clause Initial Schedule";
+    break;
+  case GCNSchedStageID::MLSchedule:
+    OS << "Machine Learning Guided Schedule";
     break;
   }
 
