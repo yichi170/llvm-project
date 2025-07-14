@@ -66,6 +66,8 @@ protected:
                      const SIRegisterInfo *SRI, unsigned SGPRPressure,
                      unsigned VGPRPressure, bool IsBottomUp);
 
+  void extractGlobalFeatures();
+
   
   const MLModelRunner &getRunner() const { return *Runner; }
 

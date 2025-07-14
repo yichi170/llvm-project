@@ -117,7 +117,7 @@ static const TensorSpec Reward = TensorSpec::createSpec<float>("reward", {1});
 // --------------
 // Features table
 // --------------
-static const int MaxNumInstCandidates = 64 * 2;
+static const int MaxNumInstCandidates = 128 * 2;
 static const std::vector<int64_t> PerInstrFeatureShape{1, MaxNumInstCandidates};
 #define SCHED_FEATURES_LIST(M)					\
   M(int64_t, mask, PerInstrFeatureShape,			\
@@ -126,6 +126,8 @@ static const std::vector<int64_t> PerInstrFeatureShape{1, MaxNumInstCandidates};
     "boolean values, 1 if the instruction is from Top Queue")	\
   M(int64_t, is_bot, PerInstrFeatureShape,			\
     "boolean values, 1 if the instruction is from Bot Queue")	\
+  M(int64_t, pos, PerInstrFeatureShape,				\
+    "position in the queue.")					\
   M(int64_t, excess, PerInstrFeatureShape, "")			\
   M(int64_t, current_max, PerInstrFeatureShape, "")		\
   M(int64_t, critical_max, PerInstrFeatureShape, "")		\
@@ -135,7 +137,11 @@ static const std::vector<int64_t> PerInstrFeatureShape{1, MaxNumInstCandidates};
   M(int64_t, su_succs_left, PerInstrFeatureShape, "")		\
   M(int64_t, su_preds_left, PerInstrFeatureShape, "")		\
   M(int64_t, su_succs, PerInstrFeatureShape, "")		\
-  M(int64_t, su_preds, PerInstrFeatureShape, "")
+  M(int64_t, su_preds, PerInstrFeatureShape, "")		\
+  M(int64_t, sgpr_critical_limit, {1}, "")			\
+  M(int64_t, vgpr_critical_limit, {1}, "")			\
+  M(int64_t, sgpr_excess_limit, {1}, "")			\
+  M(int64_t, vgpr_excess_limit, {1}, "")
 
 // Named features index.
 enum SchedFeatureIDs {
@@ -155,7 +161,7 @@ template <typename T> static size_t getTotalSize(const std::vector<int64_t> &Sha
 }
 
 void GCNSchedStrategy::resetRunnerInput() {
-  LLVM_DEBUG(dbgs() << "[GCNSchedStrategy::resetRunnerInput]\n");
+  LLVM_DEBUG(dbgs() << "=== GCNSchedStrategy::resetRunnerInput\n");
 #define _RESET(TYPE, NAME, SHAPE, __)                            \
   std::memset(Runner->getTensorUntyped(SchedFeatureIDs::NAME), 0, \
               getTotalSize<Type>(SHAPE));
@@ -174,7 +180,7 @@ GCNSchedStrategy::GCNSchedStrategy(const MachineSchedContext *C)
       MLModelUnderTraining.empty() && MLSchedTrainingLog.empty()) {
     Log = nullptr;
     Runner = nullptr;
-    LLVM_DEBUG(dbgs() << "[ML GCNSchedStrategy] in development mode, logging or "
+    LLVM_DEBUG(dbgs() << "=== ML GCNSchedStrategy: in development mode, logging or "
 	       << "a training model shuold be provided.");
     return;
   }
@@ -478,21 +484,21 @@ bool GCNSchedStrategy::tryCandidateAndExtractFeatures(SchedCandidate &Cand,
   if (Log == nullptr)
     return tryCandidate(Cand, TryCand, Zone);
 
-  LLVM_DEBUG(dbgs() << "[ML tryCand & extractFeatures] Try extracting... \n");
+  LLVM_DEBUG(dbgs() << "=== tryCand & extractFeatures\n");
   // Set the features at the column 'Idx'.
   // if Candidate is from Bot, Idx = 2 * Pos
   // if Candidate is from Top, Idx = 2 * Pos + 1
   int64_t Idx = 2 * Pos + TryCand.AtTop;
-  LLVM_DEBUG(dbgs() << "Index: " << Idx << ", ");
-  LLVM_DEBUG(dbgs() << "TryCand.AtTop: " << TryCand.AtTop << "\n");
+  LLVM_DEBUG(dbgs() << "[Position in Q: " << Pos << "]\n");
+  LLVM_DEBUG(dbgs() << "    TryCand.AtTop: " << TryCand.AtTop << ", ");
   LLVM_DEBUG(dbgs() << "RPDelta.Excess: " << TryCand.RPDelta.Excess.getUnitInc() << ", ");
   LLVM_DEBUG(dbgs() << "RPDelta.CurrentMax: " << TryCand.RPDelta.CurrentMax.getUnitInc() << ", ");
   LLVM_DEBUG(dbgs() << "RPDelta.CriticalMax: " << TryCand.RPDelta.CriticalMax.getUnitInc() << "\n");
-  LLVM_DEBUG(dbgs() << "SU->Latency: " << TryCand.SU->Latency << ", ");
+  LLVM_DEBUG(dbgs() << "    SU->Latency: " << TryCand.SU->Latency << ", ");
   LLVM_DEBUG(dbgs() << "SU->getHeight: " << TryCand.SU->getHeight() << ", ");
   LLVM_DEBUG(dbgs() << "SU->getDepth: " << TryCand.SU->getDepth() << "\n");
-  LLVM_DEBUG(dbgs() << "SU->NumSuccsLeft: " << TryCand.SU->NumSuccsLeft << ", ");
-  LLVM_DEBUG(dbgs() << "SU->NumPredsLeft: " << TryCand.SU->NumPredsLeft << "\n");
+  LLVM_DEBUG(dbgs() << "    SU->NumSuccsLeft: " << TryCand.SU->NumSuccsLeft << ", ");
+  LLVM_DEBUG(dbgs() << "SU->NumPredsLeft: " << TryCand.SU->NumPredsLeft << ", ");
   LLVM_DEBUG(dbgs() << "SU->NumSuccs: " << TryCand.SU->NumSuccs << ", ");
   LLVM_DEBUG(dbgs() << "SU->NumPreds: " << TryCand.SU->NumPreds << "\n");
 
@@ -503,6 +509,7 @@ bool GCNSchedStrategy::tryCandidateAndExtractFeatures(SchedCandidate &Cand,
   SET(mask, int64_t, 1);
   SET(is_top, int64_t, TryCand.AtTop);
   SET(is_bot, int64_t, !TryCand.AtTop);
+  SET(pos, int64_t, Pos);
   SET(excess, int64_t, TryCand.RPDelta.Excess.getUnitInc());
   SET(current_max, int64_t, TryCand.RPDelta.CurrentMax.getUnitInc());
   SET(critical_max, int64_t, TryCand.RPDelta.CriticalMax.getUnitInc());
@@ -515,23 +522,22 @@ bool GCNSchedStrategy::tryCandidateAndExtractFeatures(SchedCandidate &Cand,
   SET(su_preds, int64_t, TryCand.SU->NumPreds);
 #undef SET
 
-  LLVM_DEBUG(dbgs() << "Finished extracting features!\n");
-
   // Finish extracting features of TryCand, and return back the value of tryCandidate
   return tryCandidate(Cand, TryCand, Zone);
 }
 
-// void GCNSchedStrategy::extractGlobalFeatures() {
-// #define SET(ID, TYPE, VAL)						\
-//  do {									\
-//    *Runner->getTensor<TYPE>(SchedFeatureIDs::ID) = static_cast<TYPE>(VAL); \
-//  } while (false)
-  //  SET(sgpr_critical_limit, int64_t, SGPRCriticalLimit);
-  //  SET(vgpr_critical_limit, int64_t, VGPRCriticalLimit);
-  //  SET(sgpr_excess_limit, int64_t, SGPRExcessLimit);
-  //  SET(vgpr_excess_limit, int64_t, VGPRExcessLimit);
-// #undef SET
-// }
+void GCNSchedStrategy::extractGlobalFeatures() {
+  LLVM_DEBUG(dbgs() << "=== GCNSchedStrategy::extractGlobalFeatures\n");
+#define SET(ID, TYPE, VAL)						\
+  do {									\
+    *Runner->getTensor<TYPE>(SchedFeatureIDs::ID) = static_cast<TYPE>(VAL); \
+  } while (false)
+  SET(sgpr_critical_limit, int64_t, SGPRCriticalLimit);
+  SET(vgpr_critical_limit, int64_t, VGPRCriticalLimit);
+  SET(sgpr_excess_limit, int64_t, SGPRExcessLimit);
+  SET(vgpr_excess_limit, int64_t, VGPRExcessLimit);
+#undef SET
+}
 
 // This function is mostly cut and pasted from
 // GenericScheduler::pickNodeFromQueue()
@@ -573,6 +579,7 @@ void GCNSchedStrategy::pickNodeFromQueue(SchedBoundary &Zone,
       LLVM_DEBUG(traceCandidate(Cand));
     }
   }
+  extractGlobalFeatures();
 }
 
 // This function is mostly cut and pasted from
@@ -710,10 +717,8 @@ SUnit *GCNSchedStrategy::pickNode(bool &IsTopNode) {
     }
   } while (SU->isScheduled);
 
-  if (Log != nullptr) {
-    LLVM_DEBUG(dbgs() << "[GCNSchedStrategy::pickNode] Log data for Machine Learning\n");
+  if (Log != nullptr)
     logMLFeatures(SchedIndex, PickedNodeFromTop);
-  }
 
   if (SU->isTopReady())
     Top.removeReady(SU);
@@ -728,9 +733,12 @@ SUnit *GCNSchedStrategy::pickNode(bool &IsTopNode) {
 void GCNSchedStrategy::logMLFeatures(int64_t SchedIndex, int8_t PickedNodeFromTop) {
   //  if (Log->hasObservationInProgress())
   //    Log->logReward<float>(0.0);
-  LLVM_DEBUG(dbgs() << "[GCNSchedStrategy::logMLFeatures] schedule index: "
+  LLVM_DEBUG(dbgs() << "=== GCNSchedStrategy::logMLFeatures: schedule index: "
 	     << SchedIndex << "\n");
-  if (SchedIndex < 0) {
+  if (SchedIndex < 0 || 2 * SchedIndex + PickedNodeFromTop >= MaxNumInstCandidates) {
+      LLVM_DEBUG(dbgs() << "=== GCNSchedStrategy::logMLFeatures: index is larger than"
+		 << " MaxNumInstCandidates. Skip...\n");
+    resetRunnerInput();
     return;
   }
 
