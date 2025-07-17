@@ -34,10 +34,12 @@
 #include "llvm/CodeGen/RegisterClassInfo.h"
 #include "llvm/MC/LaneBitmask.h"
 #include "llvm/Support/ErrorHandling.h"
-#include <cstdint>
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/IR/LLVMContext.h"
+
+#include <bitset>
+#include <cstdint>
 #include <memory>
 #include <vector>
 
@@ -164,7 +166,7 @@ void GCNSchedStrategy::resetRunnerInput() {
   LLVM_DEBUG(dbgs() << "=== GCNSchedStrategy::resetRunnerInput\n");
 #define _RESET(TYPE, NAME, SHAPE, __)                            \
   std::memset(Runner->getTensorUntyped(SchedFeatureIDs::NAME), 0, \
-              getTotalSize<Type>(SHAPE));
+              getTotalSize<TYPE>(SHAPE));
   SCHED_FEATURES_LIST(_RESET)
 #undef _RESET
 }
@@ -579,7 +581,6 @@ void GCNSchedStrategy::pickNodeFromQueue(SchedBoundary &Zone,
       LLVM_DEBUG(traceCandidate(Cand));
     }
   }
-  extractGlobalFeatures();
 }
 
 // This function is mostly cut and pasted from
@@ -717,8 +718,16 @@ SUnit *GCNSchedStrategy::pickNode(bool &IsTopNode) {
     }
   } while (SU->isScheduled);
 
-  if (Log != nullptr)
+  if (isa<ModelUnderTrainingRunner>(Runner.get())) {
+    int64_t Ret = Runner->evaluate<int64_t>();
+    LLVM_DEBUG(dbgs() << "=+= Position guessed by Model: " << Ret << "\n");
+  }
+
+  if (Log != nullptr) {
+    extractGlobalFeatures();
+    LLVM_DEBUG(dbgs() << "=+= Schedule Index picked by heuristics: " << SchedIndex << "\n");
     logMLFeatures(SchedIndex, PickedNodeFromTop);
+  }
 
   if (SU->isTopReady())
     Top.removeReady(SU);
@@ -738,7 +747,7 @@ void GCNSchedStrategy::logMLFeatures(int64_t SchedIndex, int8_t PickedNodeFromTo
   if (SchedIndex < 0 || 2 * SchedIndex + PickedNodeFromTop >= MaxNumInstCandidates) {
       LLVM_DEBUG(dbgs() << "=== GCNSchedStrategy::logMLFeatures: index is larger than"
 		 << " MaxNumInstCandidates. Skip...\n");
-    resetRunnerInput();
+      // resetRunnerInput();
     return;
   }
 
