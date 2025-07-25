@@ -40,7 +40,7 @@ static const TensorSpec Reward = TensorSpec::createSpec<float>("reward", {1});
 // --------------
 // Features table
 // --------------
-static const int MaxNumInstCandidates = 64 * 2;
+static const int MaxNumInstCandidates = 128 * 2;
 static const std::vector<int64_t> PerInstrFeatureShape{1, MaxNumInstCandidates};
 #define SCHED_FEATURES_LIST(M)					\
   M(int64_t, mask, PerInstrFeatureShape,			\
@@ -50,7 +50,7 @@ static const std::vector<int64_t> PerInstrFeatureShape{1, MaxNumInstCandidates};
   M(int64_t, is_bot, PerInstrFeatureShape,			\
     "boolean values, 1 if the instruction is from Bot Queue")	\
   M(int64_t, pos, PerInstrFeatureShape,				\
-    "position in the queue.")					\
+    "position in the scheduling region (SU->NodeNum).")		\
   M(int64_t, excess, PerInstrFeatureShape, "")			\
   M(int64_t, current_max, PerInstrFeatureShape, "")		\
   M(int64_t, critical_max, PerInstrFeatureShape, "")		\
@@ -87,7 +87,7 @@ static void resetRunnerInput(MLModelRunner &Runner) {
   LLVM_DEBUG(dbgs() << "=== resetRunnerInput\n");
 #define _RESET(TYPE, NAME, SHAPE, __)                            \
   std::memset(Runner.getTensorUntyped(SchedFeatureIDs::NAME), 0, \
-              getTotalSize<Type>(SHAPE));
+              getTotalSize<TYPE>(SHAPE));
   SCHED_FEATURES_LIST(_RESET)
 #undef _RESET
 }
@@ -140,7 +140,9 @@ void MLGCNSchedStrategy::initializeMLGO(const MachineSchedContext *C) {
 
 
 SUnit *MLGCNSchedStrategy::pickNode(bool &IsTopNode) {
+  LLVM_DEBUG(dbgs() << "MLGCNSchedStrategy::pickNode\n");
     if (DAG->top() == DAG->bottom()) {
+      LLVM_DEBUG(dbgs() << "DAG: top == bottom\n");
     assert(Top.Available.empty() && Top.Pending.empty() &&
            Bot.Available.empty() && Bot.Pending.empty() && "ReadyQ garbage");
     return nullptr;
@@ -160,43 +162,45 @@ SUnit *MLGCNSchedStrategy::pickNode(bool &IsTopNode) {
   extractFeatures(Bot, BotPolicy, DAG->getBotRPTracker(), /*IsBottomUp=*/true);
   extractGlobalFeatures();
 
-  // make decision here
-  if (isa<ModelUnderTrainingRunner>(getRunner())) {
-    SU = pickNodeByModel();
-    // TODO: skip do-while if no need. // how to determine it?
-    // when to keep collecting data?
+  // pickNode by ML model
+  if (isa<ModelUnderTrainingRunner>(getRunner()))
+    SU = pickNodeByModel(IsTopNode);
+
+  // pickNode by heuristics if model didn't pick a node
+  if (!SU) {
+    do {
+      if (RegionPolicy.OnlyTopDown) {
+	SU = Top.pickOnlyChoice();
+	if (!SU) {
+	  CandPolicy NoPolicy;
+	  TopCand.reset(NoPolicy);
+	  pickNodeFromQueue(Top, NoPolicy, DAG->getTopRPTracker(), TopCand,
+			    /*IsBottomUp=*/false);
+	  assert(TopCand.Reason != NoCand && "failed to find a candidate");
+	  SU = TopCand.SU;
+	}
+	IsTopNode = true;
+      } else if (RegionPolicy.OnlyBottomUp) {
+	SU = Bot.pickOnlyChoice();
+	if (!SU) {
+	  CandPolicy NoPolicy;
+	  BotCand.reset(NoPolicy);
+	  pickNodeFromQueue(Bot, NoPolicy, DAG->getBotRPTracker(), BotCand,
+			    /*IsBottomUp=*/true);
+	  assert(BotCand.Reason != NoCand && "failed to find a candidate");
+	  SU = BotCand.SU;
+	}
+	IsTopNode = false;
+      } else {
+	SU = pickNodeBidirectional(IsTopNode, IsOnlyChoice);
+      }
+    } while (SU->isScheduled);
   }
 
-  do {
-    if (RegionPolicy.OnlyTopDown) {
-      SU = Top.pickOnlyChoice();
-      if (!SU) {
-        CandPolicy NoPolicy;
-        TopCand.reset(NoPolicy);
-        pickNodeFromQueue(Top, NoPolicy, DAG->getTopRPTracker(), TopCand,
-                          /*IsBottomUp=*/false);
-        assert(TopCand.Reason != NoCand && "failed to find a candidate");
-        SU = TopCand.SU;
-      }
-      IsTopNode = true;
-    } else if (RegionPolicy.OnlyBottomUp) {
-      SU = Bot.pickOnlyChoice();
-      if (!SU) {
-        CandPolicy NoPolicy;
-        BotCand.reset(NoPolicy);
-        pickNodeFromQueue(Bot, NoPolicy, DAG->getBotRPTracker(), BotCand,
-                          /*IsBottomUp=*/true);
-        assert(BotCand.Reason != NoCand && "failed to find a candidate");
-        SU = BotCand.SU;
-      }
-      IsTopNode = false;
-    } else {
-      SU = pickNodeBidirectional(IsTopNode, IsOnlyChoice);
-    }
-  } while (SU->isScheduled);
+  int64_t SchedIndex = IsTopNode ? Top.Available.getPos(SU) : Bot.Available.getPos(SU);
+  LLVM_DEBUG(dbgs() << "=*= MLGCNSchedStrategy::pickNode: Idx = " << SchedIndex << "\n");
 
   if (Log != nullptr && !IsOnlyChoice) {
-    int64_t SchedIndex = IsTopNode ? Top.Available.getPos(SU) : Bot.Available.getPos(SU);
     SchedIndex = SchedIndex * 2 + IsTopNode;
     logMLFeatures(SchedIndex);
   }
@@ -225,17 +229,24 @@ SUnit *MLGCNSchedStrategy::pickNodeBidirectional(bool &IsTopNode, bool &IsOnlyCh
   return GCNSchedStrategy::pickNodeBidirectional(IsTopNode);
 }
 
-SUnit *MLGCNSchedStrategy::pickNodeByModel() {
-  int64_t Idx = Runner->evaluate<int64_t>();
+SUnit *MLGCNSchedStrategy::pickNodeByModel(bool &IsTopNode) {
+  int64_t Ret = Runner->evaluate<int64_t>();
+  LLVM_DEBUG(dbgs() << "=*= MLGCNSchedStrategy::pickNodeByModel: Ret = " << Ret << "\n");
 
-  if (Idx % 2) {
-    --Idx;
-    ReadyQueue &TopQ = Top.Available;
-    return TopQ.elements()[Idx];
-  } else {
-    ReadyQueue &BotQ = Bot.Available;
-    return BotQ.elements()[Idx];
-  }
+  // TODO: handle out-of-bound index
+  ReadyQueue &Q = Bot.Available;
+  IsTopNode = false;
+  if (Ret % 2) {
+    LLVM_DEBUG(dbgs() << "    Picking from TopQ by model\n");
+    --Ret;
+    Q = Top.Available;
+    IsTopNode = true;
+  } else
+    LLVM_DEBUG(dbgs() << "    Picking from BotQ by model\n");
+
+  if (Ret / 2 >= Q.size())
+    return nullptr;
+  return Q.elements()[Ret / 2];
 }
 
 void MLGCNSchedStrategy::logMLFeatures(int64_t SchedIndex) {
@@ -243,6 +254,11 @@ void MLGCNSchedStrategy::logMLFeatures(int64_t SchedIndex) {
   //    Log->logReward<float>(0.0);
   LLVM_DEBUG(dbgs() << "=== MLGCNSchedStrategy::logMLFeatures: schedule index: "
 	     << SchedIndex << "\n");
+
+  if (SchedIndex >= MaxNumInstCandidates) {
+    resetRunnerInput(*Runner);
+    return;
+  }
 
   Log->startObservation();
   size_t CurrentFeature = 0;
@@ -287,7 +303,7 @@ void MLGCNSchedStrategy::extractCandidateFeatures(SchedCandidate &TryCand,
   // if Candidate is from Bot, Idx = 2 * Pos
   // if Candidate is from Top, Idx = 2 * Pos + 1
   int64_t Idx = 2 * Pos + TryCand.AtTop;
-  LLVM_DEBUG(dbgs() << "[Position in Q: " << Pos << "]\n");
+  LLVM_DEBUG(dbgs() << "[Position in Q: " << Pos << ", SU(" << TryCand.SU->NodeNum << ")]\n");
   LLVM_DEBUG(dbgs() << "    TryCand.AtTop: " << TryCand.AtTop << ", ");
   LLVM_DEBUG(dbgs() << "RPDelta.Excess: " << TryCand.RPDelta.Excess.getUnitInc() << ", ");
   LLVM_DEBUG(dbgs() << "RPDelta.CurrentMax: " << TryCand.RPDelta.CurrentMax.getUnitInc() << ", ");
@@ -307,7 +323,7 @@ void MLGCNSchedStrategy::extractCandidateFeatures(SchedCandidate &TryCand,
   SET(mask, int64_t, 1);
   SET(is_top, int64_t, TryCand.AtTop);
   SET(is_bot, int64_t, !TryCand.AtTop);
-  SET(pos, int64_t, Pos);
+  SET(pos, int64_t, TryCand.SU->NodeNum);
   SET(excess, int64_t, TryCand.RPDelta.Excess.getUnitInc());
   SET(current_max, int64_t, TryCand.RPDelta.CurrentMax.getUnitInc());
   SET(critical_max, int64_t, TryCand.RPDelta.CriticalMax.getUnitInc());

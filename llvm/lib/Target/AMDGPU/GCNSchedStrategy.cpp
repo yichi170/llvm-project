@@ -1202,7 +1202,8 @@ bool GCNSchedStage::initGCNRegion() {
   Unsched.clear();
   Unsched.reserve(DAG.NumRegionInstrs);
   if (StageID == GCNSchedStageID::OccInitialSchedule ||
-      StageID == GCNSchedStageID::ILPInitialSchedule) {
+      StageID == GCNSchedStageID::ILPInitialSchedule ||
+      StageID == GCNSchedStageID::MLSchedule) {
     const SIInstrInfo *SII = static_cast<const SIInstrInfo *>(DAG.TII);
     for (auto &I : DAG) {
       Unsched.push_back(&I);
@@ -1231,7 +1232,8 @@ bool GCNSchedStage::initGCNRegion() {
     SavedMutations.clear();
     SavedMutations.swap(DAG.Mutations);
     bool IsInitialStage = StageID == GCNSchedStageID::OccInitialSchedule ||
-                          StageID == GCNSchedStageID::ILPInitialSchedule;
+                          StageID == GCNSchedStageID::ILPInitialSchedule ||
+      StageID == GCNSchedStageID::MLSchedule;
     DAG.addMutation(createIGroupLPDAGMutation(
         IsInitialStage ? AMDGPU::SchedulingPhase::Initial
                        : AMDGPU::SchedulingPhase::PreRAReentry));
@@ -1277,11 +1279,13 @@ void GCNSchedStage::setupNewBlock() {
   // initial schedule stage real RP will be collected after scheduling.
   if (StageID == GCNSchedStageID::OccInitialSchedule ||
       StageID == GCNSchedStageID::ILPInitialSchedule ||
+      StageID == GCNSchedStageID::MLSchedule ||
       StageID == GCNSchedStageID::MemoryClauseInitialSchedule)
     DAG.computeBlockPressure(RegionIdx, CurrentMBB);
 }
 
 void GCNSchedStage::finalizeGCNRegion() {
+  LLVM_DEBUG(dbgs() << "********** GCNSchedStage::finalizeGCNRegion\n");
   DAG.Regions[RegionIdx] = std::pair(DAG.RegionBegin, DAG.RegionEnd);
   if (S.HasHighPressure)
     DAG.RegionsWithHighRP[RegionIdx] = true;
@@ -1300,6 +1304,7 @@ void GCNSchedStage::finalizeGCNRegion() {
 
 void GCNSchedStage::checkScheduling() {
   // Check the results of scheduling.
+  LLVM_DEBUG(dbgs() << "********** GCNSchedStage::checkScheduling\n");
   PressureAfter = DAG.getRealRegPressure(RegionIdx);
 
   LLVM_DEBUG(dbgs() << "Pressure after scheduling: " << print(PressureAfter));

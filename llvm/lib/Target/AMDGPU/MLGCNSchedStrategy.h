@@ -34,7 +34,7 @@ protected:
 
   SUnit *pickNodeBidirectional(bool &IsTopNode, bool &IsOnlyChoice);
 
-  SUnit *pickNodeByModel();
+  SUnit *pickNodeByModel(bool &IsTopNode);
 
   void logMLFeatures(int64_t SchedIndex);
 
