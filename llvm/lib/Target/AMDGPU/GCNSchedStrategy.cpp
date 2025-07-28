@@ -92,11 +92,8 @@ void GCNSchedStrategy::initialize(ScheduleDAGMI *DAG) {
 
   MF = &DAG->MF;
 
-  if (Log != nullptr) {
-    Log->switchContext(MF->getName());
-    // only InteractiveModelRunner implements switchContext
-    Runner->switchContext(MF->getName());
-  }
+  LLVM_DEBUG(dbgs() << "GCNSchedStrategy::initialize(): MF->getName: "
+	     << MF->getName() << "\n");
 
   const GCNSubtarget &ST = MF->getSubtarget<GCNSubtarget>();
 
@@ -1157,9 +1154,19 @@ bool PreRARematStage::initGCNSchedStage() {
   return true;
 }
 
+bool MLScheduleStage::initGCNSchedStage() {
+  if (!GCNSchedStage::initGCNSchedStage())
+    return false;
+
+  MLGCNSchedStrategy &MLS = static_cast<MLGCNSchedStrategy &>(S);
+  MLS.switchContextForLog(DAG.MF.getName());
+  return true;
+}
+
 void GCNSchedStage::finalizeGCNSchedStage() {
   DAG.finishBlock();
   LLVM_DEBUG(dbgs() << "Ending scheduling stage: " << StageID << "\n");
+  LLVM_DEBUG(dbgs() << "Occupancy: " << S.getCurrentOccupancy() << "\n");
 }
 
 void UnclusteredHighRPStage::finalizeGCNSchedStage() {
@@ -1175,6 +1182,12 @@ void UnclusteredHighRPStage::finalizeGCNSchedStage() {
                       << DAG.MinOccupancy << '\n');
   }
 
+  GCNSchedStage::finalizeGCNSchedStage();
+}
+
+void MLScheduleStage::finalizeGCNSchedStage() {
+  MLGCNSchedStrategy &MLS = static_cast<MLGCNSchedStrategy &>(S);
+  MLS.logRewardIfNeeded();
   GCNSchedStage::finalizeGCNSchedStage();
 }
 

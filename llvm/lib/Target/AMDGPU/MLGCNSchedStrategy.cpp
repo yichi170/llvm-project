@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "MLGCNSchedStrategy.h"
+#include "SIMachineFunctionInfo.h"
 #include "llvm/Analysis/NoInferenceModelRunner.h"
 #include "llvm/CodeGen/MachineScheduler.h"
 #include <cstdint>
@@ -135,9 +136,16 @@ void MLGCNSchedStrategy::initializeMLGO(const MachineSchedContext *C) {
   LFS.push_back(DecisionSpec);
 
   Log = std::make_unique<Logger>(std::move(OS), LFS, Reward,
-				 /*IncludeReward*/ true);  
+				 /*IncludeReward*/ true);
 }
 
+void MLGCNSchedStrategy::switchContextForLog(StringRef Context) {
+  if (Log == nullptr) return;
+
+  LLVM_DEBUG(dbgs() << "Switch context for ML data logging: " << Context << "\n");
+  Log->switchContext(Context);
+  Runner->switchContext(Context);
+}
 
 SUnit *MLGCNSchedStrategy::pickNode(bool &IsTopNode) {
   LLVM_DEBUG(dbgs() << "MLGCNSchedStrategy::pickNode\n");
@@ -260,6 +268,9 @@ void MLGCNSchedStrategy::logMLFeatures(int64_t SchedIndex) {
     return;
   }
 
+  if (Log->hasObservationInProgress())
+    Log->logReward<float>(0.0);
+
   Log->startObservation();
   size_t CurrentFeature = 0;
   for (; CurrentFeature < SchedFeatureIDs::FeatureCount; ++CurrentFeature) {
@@ -270,7 +281,7 @@ void MLGCNSchedStrategy::logMLFeatures(int64_t SchedIndex) {
   Log->logTensorValue(CurrentFeature, reinterpret_cast<const char *>(&SchedIndex));
   Log->endObservation();
 
-  Log->logReward<float>(0.0);
+  // Log->logReward<float>(0.0);
 }
 
 void MLGCNSchedStrategy::extractFeatures(SchedBoundary &Zone,
@@ -349,4 +360,11 @@ void MLGCNSchedStrategy::extractGlobalFeatures() {
   SET(sgpr_excess_limit, int64_t, SGPRExcessLimit);
   SET(vgpr_excess_limit, int64_t, VGPRExcessLimit);
 #undef SET
+}
+
+void MLGCNSchedStrategy::logRewardIfNeeded() {
+  // TODO: Release mode doesn't require reward
+  SIMachineFunctionInfo &MFI = *MF->getInfo<SIMachineFunctionInfo>();
+  if (Log->hasObservationInProgress())
+    Log->logReward<float>(MFI.getOccupancy());
 }

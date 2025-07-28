@@ -14,6 +14,7 @@
 #define LLVM_LIB_TARGET_AMDGPU_GCNSCHEDSTRATEGY_H
 
 #include "GCNRegPressure.h"
+#include "SIMachineFunctionInfo.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/CodeGen/MachineInstr.h"
@@ -88,10 +89,6 @@ protected:
   // GCN RP Tracker for botttom-up scheduling
   mutable GCNUpwardRPTracker UpwardTracker;
 
-  // Machine Learning Guided Instruction Scheduling
-  std::unique_ptr<MLModelRunner> Runner;
-  std::unique_ptr<Logger> Log;
-
 public:
   // schedule() have seen register pressure over the critical limits and had to
   // track register pressure for actual scheduling heuristics.
@@ -131,6 +128,10 @@ public:
   unsigned getTargetOccupancy() { return TargetOccupancy; }
 
   void setTargetOccupancy(unsigned Occ) { TargetOccupancy = Occ; }
+
+  unsigned getCurrentOccupancy() {
+    return MF->getInfo<SIMachineFunctionInfo>()->getOccupancy();
+  }
 
   GCNSchedStageID getCurrentStage();
 
@@ -555,7 +556,11 @@ public:
 
 class MLScheduleStage : public GCNSchedStage {
 public:
-  bool shouldRevertScheduling(unsigned WavesAfter) override {return false; }
+  bool initGCNSchedStage() override;
+
+  void finalizeGCNSchedStage() override;
+
+  bool shouldRevertScheduling(unsigned WavesAfter) override { return false; }
 
   MLScheduleStage(GCNSchedStageID StageID, GCNScheduleDAGMILive &DAG)
       : GCNSchedStage(StageID, DAG) {}

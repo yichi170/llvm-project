@@ -25,6 +25,10 @@ public:
 
   void initializeMLGO(const MachineSchedContext *C);
 
+  void switchContextForLog(StringRef Context);
+
+  void logRewardIfNeeded();
+
   SUnit *pickNode(bool &IsTopNode) override;
 
   enum class SchedMode : int { Default, Release, Development };
