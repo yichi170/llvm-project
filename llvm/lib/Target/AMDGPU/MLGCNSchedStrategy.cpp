@@ -14,6 +14,7 @@
 #include "SIMachineFunctionInfo.h"
 #include "llvm/Analysis/NoInferenceModelRunner.h"
 #include "llvm/CodeGen/MachineScheduler.h"
+#include <cstddef>
 #include <cstdint>
 
 #define DEBUG_TYPE "machine-scheduler"
@@ -149,7 +150,7 @@ void MLGCNSchedStrategy::switchContextForLog(StringRef Context) {
 
 SUnit *MLGCNSchedStrategy::pickNode(bool &IsTopNode) {
   LLVM_DEBUG(dbgs() << "MLGCNSchedStrategy::pickNode\n");
-    if (DAG->top() == DAG->bottom()) {
+  if (DAG->top() == DAG->bottom()) {
       LLVM_DEBUG(dbgs() << "DAG: top == bottom\n");
     assert(Top.Available.empty() && Top.Pending.empty() &&
            Bot.Available.empty() && Bot.Pending.empty() && "ReadyQ garbage");
@@ -173,12 +174,18 @@ SUnit *MLGCNSchedStrategy::pickNode(bool &IsTopNode) {
   // pickNode by ML model
   if (isa<ModelUnderTrainingRunner>(getRunner()))
     SU = pickNodeByModel(IsTopNode);
-  else
+  else {
     LLVM_DEBUG(dbgs() << "Picking Node by Heuristics\n");
+    SU = nullptr;
+  }
+
+  LLVM_DEBUG(Top.Pending.dump());
+  LLVM_DEBUG(Top.Available.dump());
+  LLVM_DEBUG(Bot.Pending.dump());
+  LLVM_DEBUG(Bot.Available.dump());
 
   // pickNode by heuristics if model didn't pick a node
   if (!SU) {
-    LLVM_DEBUG(dbgs() << "Start executing the do-loop for picking node\n");
     do {
       if (RegionPolicy.OnlyTopDown) {
 	SU = Top.pickOnlyChoice();
@@ -210,6 +217,7 @@ SUnit *MLGCNSchedStrategy::pickNode(bool &IsTopNode) {
 
   int64_t SchedIndex = IsTopNode ? Top.Available.getPos(SU) : Bot.Available.getPos(SU);
   LLVM_DEBUG(dbgs() << "=*= MLGCNSchedStrategy::pickNode: Idx = " << SchedIndex << "\n");
+  LLVM_DEBUG(dbgs() << "=*=                     SU(" << SU->NodeNum << ")\n");
 
   if (Log != nullptr && !IsOnlyChoice) {
     SchedIndex = SchedIndex * 2 + IsTopNode;
@@ -220,6 +228,11 @@ SUnit *MLGCNSchedStrategy::pickNode(bool &IsTopNode) {
     Top.removeReady(SU);
   if (SU->isBottomReady())
     Bot.removeReady(SU);
+
+  LLVM_DEBUG(Top.Pending.dump());
+  LLVM_DEBUG(Top.Available.dump());
+  LLVM_DEBUG(Bot.Pending.dump());
+  LLVM_DEBUG(Bot.Available.dump());
 
   LLVM_DEBUG(dbgs() << "Scheduling SU(" << SU->NodeNum << ") "
                     << *SU->getInstr());
@@ -244,20 +257,31 @@ SUnit *MLGCNSchedStrategy::pickNodeByModel(bool &IsTopNode) {
   int64_t Ret = Runner->evaluate<int64_t>();
   LLVM_DEBUG(dbgs() << "=*= MLGCNSchedStrategy::pickNodeByModel: Ret = " << Ret << "\n");
 
-  // TODO: handle out-of-bound index
-  ReadyQueue &Q = Bot.Available;
-  IsTopNode = false;
-  if (Ret % 2) {
-    LLVM_DEBUG(dbgs() << "    Picking from TopQ by model\n");
-    --Ret;
-    Q = Top.Available;
-    IsTopNode = true;
-  } else
-    LLVM_DEBUG(dbgs() << "    Picking from BotQ by model\n");
-
-  if (Ret / 2 >= Q.size())
+  if (Ret < 0) {
+    LLVM_DEBUG(dbgs() << "Ret is negative, using heuristics instead\n");
     return nullptr;
-  return Q.elements()[Ret / 2];
+  }
+
+  // Determine queue based on Ret parity
+  bool pickFromTop = (Ret % 2) != 0;
+  IsTopNode = pickFromTop;
+  if (pickFromTop) {
+    LLVM_DEBUG(dbgs() << "    Picking from TopQ by model: ");
+    --Ret;
+  } else {
+    LLVM_DEBUG(dbgs() << "    Picking from BotQ by model: ");
+  }
+
+  ReadyQueue &Q = pickFromTop ? Top.Available : Bot.Available;
+  size_t index = static_cast<size_t>(Ret / 2);
+
+  if (index >= Q.size()) {
+    LLVM_DEBUG(dbgs() << "Index is out of bound\n");
+    return nullptr;
+  }
+
+  LLVM_DEBUG(dbgs() << "SU(" << Q.elements()[index]->NodeNum << ")\n");
+  return Q.elements()[index];
 }
 
 void MLGCNSchedStrategy::logMLFeatures(int64_t SchedIndex) {
