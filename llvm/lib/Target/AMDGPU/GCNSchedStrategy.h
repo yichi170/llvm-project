@@ -130,6 +130,7 @@ public:
   void setTargetOccupancy(unsigned Occ) { TargetOccupancy = Occ; }
 
   unsigned getCurrentOccupancy() {
+    if (MF == nullptr) return 0;
     return MF->getInfo<SIMachineFunctionInfo>()->getOccupancy();
   }
 

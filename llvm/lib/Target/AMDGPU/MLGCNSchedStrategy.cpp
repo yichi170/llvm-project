@@ -173,9 +173,12 @@ SUnit *MLGCNSchedStrategy::pickNode(bool &IsTopNode) {
   // pickNode by ML model
   if (isa<ModelUnderTrainingRunner>(getRunner()))
     SU = pickNodeByModel(IsTopNode);
+  else
+    LLVM_DEBUG(dbgs() << "Picking Node by Heuristics\n");
 
   // pickNode by heuristics if model didn't pick a node
   if (!SU) {
+    LLVM_DEBUG(dbgs() << "Start executing the do-loop for picking node\n");
     do {
       if (RegionPolicy.OnlyTopDown) {
 	SU = Top.pickOnlyChoice();
@@ -363,6 +366,10 @@ void MLGCNSchedStrategy::extractGlobalFeatures() {
 }
 
 void MLGCNSchedStrategy::logRewardIfNeeded() {
+  // MF would be nullptr, if `initialize` isn't called.
+  // `initialize` is called from `schedule` when the number of instructions is more than one
+  if (Log == nullptr || MF == nullptr) return;
+
   // TODO: Release mode doesn't require reward
   SIMachineFunctionInfo &MFI = *MF->getInfo<SIMachineFunctionInfo>();
   if (Log->hasObservationInProgress())
