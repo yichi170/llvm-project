@@ -304,11 +304,14 @@ void MLGCNSchedStrategy::logMLFeatures(int64_t SchedIndex) {
     Log->logTensorValue(CurrentFeature,
                         reinterpret_cast<const char *>(getRunner().getTensorUntyped(CurrentFeature)));
   }
-  // Log the decision (index of ready queue) // may need to add direction (top/bottom)
+  if (auto *MUTR = dyn_cast<ModelUnderTrainingRunner>(&getRunner()))
+    for (size_t I = 0; I < MUTR->extraOutputsForLoggingSpecs().size();
+         ++I, ++CurrentFeature)
+      Log->logTensorValue(
+          CurrentFeature,
+          reinterpret_cast<const char *>(MUTR->getUntypedExtraOutputValue(I)));
   Log->logTensorValue(CurrentFeature, reinterpret_cast<const char *>(&SchedIndex));
   Log->endObservation();
-
-  // Log->logReward<float>(0.0);
 }
 
 void MLGCNSchedStrategy::extractFeatures(SchedBoundary &Zone,
@@ -341,6 +344,9 @@ void MLGCNSchedStrategy::extractCandidateFeatures(SchedCandidate &TryCand,
   // if Candidate is from Bot, Idx = 2 * Pos
   // if Candidate is from Top, Idx = 2 * Pos + 1
   int64_t Idx = 2 * Pos + TryCand.AtTop;
+  if (Idx >= MaxNumInstCandidates)
+    return;
+
   LLVM_DEBUG(dbgs() << "[Position in Q: " << Pos << ", SU(" << TryCand.SU->NodeNum << ")]\n");
   LLVM_DEBUG(dbgs() << "    TryCand.AtTop: " << TryCand.AtTop << ", ");
   LLVM_DEBUG(dbgs() << "RPDelta.Excess: " << TryCand.RPDelta.Excess.getUnitInc() << ", ");
