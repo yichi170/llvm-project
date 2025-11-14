@@ -999,7 +999,7 @@ define <8 x i64> @splatconstant_funnnel_v8i64(<8 x i64> %x, <8 x i64> %y) nounwi
 ;
 ; AVX512VBMI2-LABEL: splatconstant_funnnel_v8i64:
 ; AVX512VBMI2:       # %bb.0:
-; AVX512VBMI2-NEXT:    vpshldq $14, %zmm1, %zmm0, %zmm0
+; AVX512VBMI2-NEXT:    vpshldvq {{\.?LCPI[0-9]+_[0-9]+}}(%rip){1to8}, %zmm1, %zmm0
 ; AVX512VBMI2-NEXT:    retq
 ;
 ; AVX512VLBW-LABEL: splatconstant_funnnel_v8i64:
@@ -1011,7 +1011,7 @@ define <8 x i64> @splatconstant_funnnel_v8i64(<8 x i64> %x, <8 x i64> %y) nounwi
 ;
 ; AVX512VLVBMI2-LABEL: splatconstant_funnnel_v8i64:
 ; AVX512VLVBMI2:       # %bb.0:
-; AVX512VLVBMI2-NEXT:    vpshldq $14, %zmm1, %zmm0, %zmm0
+; AVX512VLVBMI2-NEXT:    vpshldvq {{\.?LCPI[0-9]+_[0-9]+}}(%rip){1to8}, %zmm1, %zmm0
 ; AVX512VLVBMI2-NEXT:    retq
   %res = call <8 x i64> @llvm.fshl.v8i64(<8 x i64> %x, <8 x i64> %y, <8 x i64> <i64 14, i64 14, i64 14, i64 14, i64 14, i64 14, i64 14, i64 14>)
   ret <8 x i64> %res
@@ -1041,7 +1041,7 @@ define <16 x i32> @splatconstant_funnnel_v16i32(<16 x i32> %x, <16 x i32> %y) no
 ;
 ; AVX512VBMI2-LABEL: splatconstant_funnnel_v16i32:
 ; AVX512VBMI2:       # %bb.0:
-; AVX512VBMI2-NEXT:    vpshldd $4, %zmm1, %zmm0, %zmm0
+; AVX512VBMI2-NEXT:    vpshldvd {{\.?LCPI[0-9]+_[0-9]+}}(%rip){1to16}, %zmm1, %zmm0
 ; AVX512VBMI2-NEXT:    retq
 ;
 ; AVX512VLBW-LABEL: splatconstant_funnnel_v16i32:
@@ -1053,7 +1053,7 @@ define <16 x i32> @splatconstant_funnnel_v16i32(<16 x i32> %x, <16 x i32> %y) no
 ;
 ; AVX512VLVBMI2-LABEL: splatconstant_funnnel_v16i32:
 ; AVX512VLVBMI2:       # %bb.0:
-; AVX512VLVBMI2-NEXT:    vpshldd $4, %zmm1, %zmm0, %zmm0
+; AVX512VLVBMI2-NEXT:    vpshldvd {{\.?LCPI[0-9]+_[0-9]+}}(%rip){1to16}, %zmm1, %zmm0
 ; AVX512VLVBMI2-NEXT:    retq
   %res = call <16 x i32> @llvm.fshl.v16i32(<16 x i32> %x, <16 x i32> %y, <16 x i32> <i32 4, i32 4, i32 4, i32 4, i32 4, i32 4, i32 4, i32 4, i32 4, i32 4, i32 4, i32 4, i32 4, i32 4, i32 4, i32 4>)
   ret <16 x i32> %res
@@ -1095,7 +1095,7 @@ define <32 x i16> @splatconstant_funnnel_v32i16(<32 x i16> %x, <32 x i16> %y) no
 ;
 ; AVX512VBMI2-LABEL: splatconstant_funnnel_v32i16:
 ; AVX512VBMI2:       # %bb.0:
-; AVX512VBMI2-NEXT:    vpshldw $7, %zmm1, %zmm0, %zmm0
+; AVX512VBMI2-NEXT:    vpshldvw {{\.?LCPI[0-9]+_[0-9]+}}(%rip), %zmm1, %zmm0
 ; AVX512VBMI2-NEXT:    retq
 ;
 ; AVX512VLBW-LABEL: splatconstant_funnnel_v32i16:
@@ -1107,7 +1107,7 @@ define <32 x i16> @splatconstant_funnnel_v32i16(<32 x i16> %x, <32 x i16> %y) no
 ;
 ; AVX512VLVBMI2-LABEL: splatconstant_funnnel_v32i16:
 ; AVX512VLVBMI2:       # %bb.0:
-; AVX512VLVBMI2-NEXT:    vpshldw $7, %zmm1, %zmm0, %zmm0
+; AVX512VLVBMI2-NEXT:    vpshldvw {{\.?LCPI[0-9]+_[0-9]+}}(%rip), %zmm1, %zmm0
 ; AVX512VLVBMI2-NEXT:    retq
   %res = call <32 x i16> @llvm.fshl.v32i16(<32 x i16> %x, <32 x i16> %y, <32 x i16> <i16 7, i16 7, i16 7, i16 7, i16 7, i16 7, i16 7, i16 7, i16 7, i16 7, i16 7, i16 7, i16 7, i16 7, i16 7, i16 7, i16 7, i16 7, i16 7, i16 7, i16 7, i16 7, i16 7, i16 7, i16 7, i16 7, i16 7, i16 7, i16 7, i16 7, i16 7, i16 7>)
   ret <32 x i16> %res

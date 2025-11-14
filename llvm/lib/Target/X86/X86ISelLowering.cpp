@@ -55600,7 +55600,7 @@ static SDValue combineCVTP2I_CVTTP2I(SDNode *N, SelectionDAG &DAG,
 
 static SDValue combineFunnelShift(SDNode *N, SelectionDAG &DAG,
                                   const X86Subtarget &Subtarget) {
-  MVT VT = N->getSimpleValue(0);
+  MVT VT = N->getSimpleValueType(0);
   SDLoc DL(N);
   SDValue N0 = N->getOperand(0);
   SDValue N1 = N->getOperand(1);
@@ -55611,12 +55611,13 @@ static SDValue combineFunnelShift(SDNode *N, SelectionDAG &DAG,
   bool IsCstSplat = X86::isConstantSplat(Amt, APIntShiftAmt);
 
   if (IsCstSplat) {
-    if (Op.getOpcode() == ISD::FSHR)
-      std::swap(Op0, Op1);
+    bool IsFSHR = N->getOpcode() == ISD::FSHR;
+    if (IsFSHR)
+      std::swap(N0, N1);
     uint64_t ShiftAmt = APIntShiftAmt.urem(EltSizeInBits);
     SDValue Imm = DAG.getTargetConstant(ShiftAmt, DL, MVT::i8);
     return getAVX512Node(IsFSHR ? X86ISD::VSHRD : X86ISD::VSHLD, DL, VT,
-                         {Op0, Op1, Imm}, DAG, Subtarget);
+                         {N0, N1, Imm}, DAG, Subtarget);
   }
   return SDValue();
 }

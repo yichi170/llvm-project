@@ -636,14 +636,16 @@ define <2 x i32> @splatconstant_funnnel_v2i32(<2 x i32> %x, <2 x i32> %y) nounwi
 ; AVX512VBMI2:       # %bb.0:
 ; AVX512VBMI2-NEXT:    # kill: def $xmm1 killed $xmm1 def $zmm1
 ; AVX512VBMI2-NEXT:    # kill: def $xmm0 killed $xmm0 def $zmm0
-; AVX512VBMI2-NEXT:    vpshrdd $4, %zmm0, %zmm1, %zmm0
-; AVX512VBMI2-NEXT:    # kill: def $xmm0 killed $xmm0 killed $zmm0
+; AVX512VBMI2-NEXT:    vpbroadcastd {{.*#+}} xmm2 = [4,4,4,4]
+; AVX512VBMI2-NEXT:    vpshrdvd %zmm2, %zmm0, %zmm1
+; AVX512VBMI2-NEXT:    vmovdqa %xmm1, %xmm0
 ; AVX512VBMI2-NEXT:    vzeroupper
 ; AVX512VBMI2-NEXT:    retq
 ;
 ; AVX512VLVBMI2-LABEL: splatconstant_funnnel_v2i32:
 ; AVX512VLVBMI2:       # %bb.0:
-; AVX512VLVBMI2-NEXT:    vpshrdd $4, %xmm0, %xmm1, %xmm0
+; AVX512VLVBMI2-NEXT:    vpshrdvd {{\.?LCPI[0-9]+_[0-9]+}}(%rip){1to4}, %xmm0, %xmm1
+; AVX512VLVBMI2-NEXT:    vmovdqa %xmm1, %xmm0
 ; AVX512VLVBMI2-NEXT:    retq
 ;
 ; XOP-LABEL: splatconstant_funnnel_v2i32:

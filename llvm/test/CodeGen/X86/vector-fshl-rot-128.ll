@@ -1809,14 +1809,14 @@ define <8 x i16> @splatconstant_funnnel_v8i16(<8 x i16> %x) nounwind {
 ; AVX512VBMI2-LABEL: splatconstant_funnnel_v8i16:
 ; AVX512VBMI2:       # %bb.0:
 ; AVX512VBMI2-NEXT:    # kill: def $xmm0 killed $xmm0 def $zmm0
-; AVX512VBMI2-NEXT:    vpshldw $7, %zmm0, %zmm0, %zmm0
+; AVX512VBMI2-NEXT:    vpshldvw {{\.?LCPI[0-9]+_[0-9]+}}(%rip), %zmm0, %zmm0
 ; AVX512VBMI2-NEXT:    # kill: def $xmm0 killed $xmm0 killed $zmm0
 ; AVX512VBMI2-NEXT:    vzeroupper
 ; AVX512VBMI2-NEXT:    retq
 ;
 ; AVX512VLVBMI2-LABEL: splatconstant_funnnel_v8i16:
 ; AVX512VLVBMI2:       # %bb.0:
-; AVX512VLVBMI2-NEXT:    vpshldw $7, %xmm0, %xmm0, %xmm0
+; AVX512VLVBMI2-NEXT:    vpshldvw {{\.?LCPI[0-9]+_[0-9]+}}(%rip), %xmm0, %xmm0
 ; AVX512VLVBMI2-NEXT:    retq
 ;
 ; XOP-LABEL: splatconstant_funnnel_v8i16:

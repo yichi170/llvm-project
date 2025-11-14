@@ -35,10 +35,16 @@ define <4 x i64> @avx512_funnel_shift_q_256(<4 x i64> %a0, <4 x i64> %a1) {
 }
 
 define <2 x i64> @avx512_funnel_shift_q_128_splat(<2 x i64> %a0, <2 x i64> %a1) {
-; CHECK-LABEL: avx512_funnel_shift_q_128_splat:
-; CHECK:       # %bb.0:
-; CHECK-NEXT:    vpshldq $31, %xmm1, %xmm0, %xmm0
-; CHECK-NEXT:    ret{{[l|q]}}
+; X86-LABEL: avx512_funnel_shift_q_128_splat:
+; X86:       # %bb.0:
+; X86-NEXT:    vpbroadcastd {{.*#+}} xmm2 = [31,31,31,31]
+; X86-NEXT:    vpshldvq %xmm2, %xmm1, %xmm0
+; X86-NEXT:    retl
+;
+; X64-LABEL: avx512_funnel_shift_q_128_splat:
+; X64:       # %bb.0:
+; X64-NEXT:    vpshldvq {{\.?LCPI[0-9]+_[0-9]+}}(%rip){1to2}, %xmm1, %xmm0
+; X64-NEXT:    retq
   %1 =  shl <2 x i64> %a0, <i64 31, i64 31>
   %2 = lshr <2 x i64> %a1, <i64 33, i64 33>
   %3 = or <2 x i64> %1, %2
@@ -46,10 +52,16 @@ define <2 x i64> @avx512_funnel_shift_q_128_splat(<2 x i64> %a0, <2 x i64> %a1) 
 }
 
 define <4 x i64> @avx512_funnel_shift_q_256_splat(<4 x i64> %a0, <4 x i64> %a1) {
-; CHECK-LABEL: avx512_funnel_shift_q_256_splat:
-; CHECK:       # %bb.0:
-; CHECK-NEXT:    vpshldq $31, %ymm1, %ymm0, %ymm0
-; CHECK-NEXT:    ret{{[l|q]}}
+; X86-LABEL: avx512_funnel_shift_q_256_splat:
+; X86:       # %bb.0:
+; X86-NEXT:    vpbroadcastd {{.*#+}} ymm2 = [31,31,31,31,31,31,31,31]
+; X86-NEXT:    vpshldvq %ymm2, %ymm1, %ymm0
+; X86-NEXT:    retl
+;
+; X64-LABEL: avx512_funnel_shift_q_256_splat:
+; X64:       # %bb.0:
+; X64-NEXT:    vpshldvq {{\.?LCPI[0-9]+_[0-9]+}}(%rip){1to4}, %ymm1, %ymm0
+; X64-NEXT:    retq
   %1 =  shl <4 x i64> %a0, <i64 31, i64 31, i64 31, i64 31>
   %2 = lshr <4 x i64> %a1, <i64 33, i64 33, i64 33, i64 33>
   %3 = or <4 x i64> %1, %2
@@ -89,10 +101,15 @@ define <8 x i32> @avx512_funnel_shift_d_256(<8 x i32> %a0, <8 x i32> %a1) {
 }
 
 define <4 x i32> @avx512_funnel_shift_d_128_splat(<4 x i32> %a0, <4 x i32> %a1) {
-; CHECK-LABEL: avx512_funnel_shift_d_128_splat:
-; CHECK:       # %bb.0:
-; CHECK-NEXT:    vpshldd $15, %xmm1, %xmm0, %xmm0
-; CHECK-NEXT:    ret{{[l|q]}}
+; X86-LABEL: avx512_funnel_shift_d_128_splat:
+; X86:       # %bb.0:
+; X86-NEXT:    vpshldvd {{\.?LCPI[0-9]+_[0-9]+}}{1to4}, %xmm1, %xmm0
+; X86-NEXT:    retl
+;
+; X64-LABEL: avx512_funnel_shift_d_128_splat:
+; X64:       # %bb.0:
+; X64-NEXT:    vpshldvd {{\.?LCPI[0-9]+_[0-9]+}}(%rip){1to4}, %xmm1, %xmm0
+; X64-NEXT:    retq
   %1 =  shl <4 x i32> %a0, <i32 15, i32 15, i32 15, i32 15>
   %2 = lshr <4 x i32> %a1, <i32 17, i32 17, i32 17, i32 17>
   %3 = or <4 x i32> %1, %2
@@ -100,10 +117,15 @@ define <4 x i32> @avx512_funnel_shift_d_128_splat(<4 x i32> %a0, <4 x i32> %a1) 
 }
 
 define <8 x i32> @avx512_funnel_shift_d_256_splat(<8 x i32> %a0, <8 x i32> %a1) {
-; CHECK-LABEL: avx512_funnel_shift_d_256_splat:
-; CHECK:       # %bb.0:
-; CHECK-NEXT:    vpshldd $15, %ymm1, %ymm0, %ymm0
-; CHECK-NEXT:    ret{{[l|q]}}
+; X86-LABEL: avx512_funnel_shift_d_256_splat:
+; X86:       # %bb.0:
+; X86-NEXT:    vpshldvd {{\.?LCPI[0-9]+_[0-9]+}}{1to8}, %ymm1, %ymm0
+; X86-NEXT:    retl
+;
+; X64-LABEL: avx512_funnel_shift_d_256_splat:
+; X64:       # %bb.0:
+; X64-NEXT:    vpshldvd {{\.?LCPI[0-9]+_[0-9]+}}(%rip){1to8}, %ymm1, %ymm0
+; X64-NEXT:    retq
   %1 =  shl <8 x i32> %a0, <i32 15, i32 15, i32 15, i32 15, i32 15, i32 15, i32 15, i32 15>
   %2 = lshr <8 x i32> %a1, <i32 17, i32 17, i32 17, i32 17, i32 17, i32 17, i32 17, i32 17>
   %3 = or <8 x i32> %1, %2
@@ -143,10 +165,15 @@ define <16 x i16> @avx512_funnel_shift_w_256(<16 x i16> %a0, <16 x i16> %a1) {
 }
 
 define <8 x i16> @avx512_funnel_shift_w_128_splat(<8 x i16> %a0, <8 x i16> %a1) {
-; CHECK-LABEL: avx512_funnel_shift_w_128_splat:
-; CHECK:       # %bb.0:
-; CHECK-NEXT:    vpshldw $7, %xmm1, %xmm0, %xmm0
-; CHECK-NEXT:    ret{{[l|q]}}
+; X86-LABEL: avx512_funnel_shift_w_128_splat:
+; X86:       # %bb.0:
+; X86-NEXT:    vpshldvw {{\.?LCPI[0-9]+_[0-9]+}}, %xmm1, %xmm0
+; X86-NEXT:    retl
+;
+; X64-LABEL: avx512_funnel_shift_w_128_splat:
+; X64:       # %bb.0:
+; X64-NEXT:    vpshldvw {{\.?LCPI[0-9]+_[0-9]+}}(%rip), %xmm1, %xmm0
+; X64-NEXT:    retq
   %1 =  shl <8 x i16> %a0, <i16 7, i16 7, i16 7, i16 7, i16 7, i16 7, i16 7, i16 7>
   %2 = lshr <8 x i16> %a1, <i16 9, i16 9, i16 9, i16 9, i16 9, i16 9, i16 9, i16 9>
   %3 = or <8 x i16> %1, %2
@@ -154,10 +181,15 @@ define <8 x i16> @avx512_funnel_shift_w_128_splat(<8 x i16> %a0, <8 x i16> %a1) 
 }
 
 define <16 x i16> @avx512_funnel_shift_w_256_splat(<16 x i16> %a0, <16 x i16> %a1) {
-; CHECK-LABEL: avx512_funnel_shift_w_256_splat:
-; CHECK:       # %bb.0:
-; CHECK-NEXT:    vpshldw $7, %ymm1, %ymm0, %ymm0
-; CHECK-NEXT:    ret{{[l|q]}}
+; X86-LABEL: avx512_funnel_shift_w_256_splat:
+; X86:       # %bb.0:
+; X86-NEXT:    vpshldvw {{\.?LCPI[0-9]+_[0-9]+}}, %ymm1, %ymm0
+; X86-NEXT:    retl
+;
+; X64-LABEL: avx512_funnel_shift_w_256_splat:
+; X64:       # %bb.0:
+; X64-NEXT:    vpshldvw {{\.?LCPI[0-9]+_[0-9]+}}(%rip), %ymm1, %ymm0
+; X64-NEXT:    retq
   %1 =  shl <16 x i16> %a0, <i16 7, i16 7, i16 7, i16 7, i16 7, i16 7, i16 7, i16 7, i16 7, i16 7, i16 7, i16 7, i16 7, i16 7, i16 7, i16 7>
   %2 = lshr <16 x i16> %a1, <i16 9, i16 9, i16 9, i16 9, i16 9, i16 9, i16 9, i16 9, i16 9, i16 9, i16 9, i16 9, i16 9, i16 9, i16 9, i16 9>
   %3 = or <16 x i16> %1, %2
@@ -165,3 +197,5 @@ define <16 x i16> @avx512_funnel_shift_w_256_splat(<16 x i16> %a0, <16 x i16> %a
 }
 
 
+;; NOTE: These prefixes are unused and the list is autogenerated. Do not add tests below this line:
+; CHECK: {{.*}}

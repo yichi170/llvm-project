@@ -2031,7 +2031,7 @@ define <4 x i64> @splatconstant_funnnel_v4i64(<4 x i64> %x, <4 x i64> %y) nounwi
 ; AVX512VBMI2:       # %bb.0:
 ; AVX512VBMI2-NEXT:    # kill: def $ymm1 killed $ymm1 def $zmm1
 ; AVX512VBMI2-NEXT:    # kill: def $ymm0 killed $ymm0 def $zmm0
-; AVX512VBMI2-NEXT:    vpshldq $14, %zmm1, %zmm0, %zmm0
+; AVX512VBMI2-NEXT:    vpshldvq {{\.?LCPI[0-9]+_[0-9]+}}(%rip){1to8}, %zmm1, %zmm0
 ; AVX512VBMI2-NEXT:    # kill: def $ymm0 killed $ymm0 killed $zmm0
 ; AVX512VBMI2-NEXT:    retq
 ;
@@ -2044,7 +2044,7 @@ define <4 x i64> @splatconstant_funnnel_v4i64(<4 x i64> %x, <4 x i64> %y) nounwi
 ;
 ; AVX512VLVBMI2-LABEL: splatconstant_funnnel_v4i64:
 ; AVX512VLVBMI2:       # %bb.0:
-; AVX512VLVBMI2-NEXT:    vpshldq $14, %ymm1, %ymm0, %ymm0
+; AVX512VLVBMI2-NEXT:    vpshldvq {{\.?LCPI[0-9]+_[0-9]+}}(%rip){1to4}, %ymm1, %ymm0
 ; AVX512VLVBMI2-NEXT:    retq
 ;
 ; XOPAVX1-LABEL: splatconstant_funnnel_v4i64:
@@ -2116,7 +2116,7 @@ define <8 x i32> @splatconstant_funnnel_v8i32(<8 x i32> %x, <8 x i32> %y) nounwi
 ; AVX512VBMI2:       # %bb.0:
 ; AVX512VBMI2-NEXT:    # kill: def $ymm1 killed $ymm1 def $zmm1
 ; AVX512VBMI2-NEXT:    # kill: def $ymm0 killed $ymm0 def $zmm0
-; AVX512VBMI2-NEXT:    vpshldd $4, %zmm1, %zmm0, %zmm0
+; AVX512VBMI2-NEXT:    vpshldvd {{\.?LCPI[0-9]+_[0-9]+}}(%rip){1to16}, %zmm1, %zmm0
 ; AVX512VBMI2-NEXT:    # kill: def $ymm0 killed $ymm0 killed $zmm0
 ; AVX512VBMI2-NEXT:    retq
 ;
@@ -2129,7 +2129,7 @@ define <8 x i32> @splatconstant_funnnel_v8i32(<8 x i32> %x, <8 x i32> %y) nounwi
 ;
 ; AVX512VLVBMI2-LABEL: splatconstant_funnnel_v8i32:
 ; AVX512VLVBMI2:       # %bb.0:
-; AVX512VLVBMI2-NEXT:    vpshldd $4, %ymm1, %ymm0, %ymm0
+; AVX512VLVBMI2-NEXT:    vpshldvd {{\.?LCPI[0-9]+_[0-9]+}}(%rip){1to8}, %ymm1, %ymm0
 ; AVX512VLVBMI2-NEXT:    retq
 ;
 ; XOPAVX1-LABEL: splatconstant_funnnel_v8i32:
@@ -2201,7 +2201,7 @@ define <16 x i16> @splatconstant_funnnel_v16i16(<16 x i16> %x, <16 x i16> %y) no
 ; AVX512VBMI2:       # %bb.0:
 ; AVX512VBMI2-NEXT:    # kill: def $ymm1 killed $ymm1 def $zmm1
 ; AVX512VBMI2-NEXT:    # kill: def $ymm0 killed $ymm0 def $zmm0
-; AVX512VBMI2-NEXT:    vpshldw $7, %zmm1, %zmm0, %zmm0
+; AVX512VBMI2-NEXT:    vpshldvw {{\.?LCPI[0-9]+_[0-9]+}}(%rip), %zmm1, %zmm0
 ; AVX512VBMI2-NEXT:    # kill: def $ymm0 killed $ymm0 killed $zmm0
 ; AVX512VBMI2-NEXT:    retq
 ;
@@ -2214,7 +2214,7 @@ define <16 x i16> @splatconstant_funnnel_v16i16(<16 x i16> %x, <16 x i16> %y) no
 ;
 ; AVX512VLVBMI2-LABEL: splatconstant_funnnel_v16i16:
 ; AVX512VLVBMI2:       # %bb.0:
-; AVX512VLVBMI2-NEXT:    vpshldw $7, %ymm1, %ymm0, %ymm0
+; AVX512VLVBMI2-NEXT:    vpshldvw {{\.?LCPI[0-9]+_[0-9]+}}(%rip), %ymm1, %ymm0
 ; AVX512VLVBMI2-NEXT:    retq
 ;
 ; XOPAVX1-LABEL: splatconstant_funnnel_v16i16:
