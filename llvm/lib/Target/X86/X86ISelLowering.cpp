@@ -2073,8 +2073,8 @@ X86TargetLowering::X86TargetLowering(const X86TargetMachine &TM,
 
     if (Subtarget.hasVBMI2()) {
       for (auto VT : {MVT::v32i16, MVT::v16i32, MVT::v8i64}) {
-        setOperationAction(ISD::FSHL, VT, Custom);
-        setOperationAction(ISD::FSHR, VT, Custom);
+        setOperationAction(ISD::FSHL, VT, Legal);
+        setOperationAction(ISD::FSHR, VT, Legal);
       }
 
       setOperationAction(ISD::ROTL, MVT::v32i16, Custom);
@@ -2087,10 +2087,11 @@ X86TargetLowering::X86TargetLowering(const X86TargetMachine &TM,
   }// useAVX512Regs
 
   if (!Subtarget.useSoftFloat() && Subtarget.hasVBMI2()) {
+    LegalizeAction ShiftAction = Subtarget.hasVLX() ? Legal : Custom;
     for (auto VT : {MVT::v8i16, MVT::v4i32, MVT::v2i64, MVT::v16i16, MVT::v8i32,
                     MVT::v4i64}) {
-      setOperationAction(ISD::FSHL, VT, Custom);
-      setOperationAction(ISD::FSHR, VT, Custom);
+      setOperationAction(ISD::FSHL, VT, ShiftAction);
+      setOperationAction(ISD::FSHR, VT, ShiftAction);
     }
   }
 
@@ -31246,15 +31247,6 @@ static SDValue LowerFunnelShift(SDValue Op, const X86Subtarget &Subtarget,
     unsigned NumElts = VT.getVectorNumElements();
 
     if (Subtarget.hasVBMI2() && EltSizeInBits > 8) {
-
-      if (IsCstSplat) {
-        if (IsFSHR)
-          std::swap(Op0, Op1);
-        uint64_t ShiftAmt = APIntShiftAmt.urem(EltSizeInBits);
-        SDValue Imm = DAG.getTargetConstant(ShiftAmt, DL, MVT::i8);
-        return getAVX512Node(IsFSHR ? X86ISD::VSHRD : X86ISD::VSHLD, DL, VT,
-                             {Op0, Op1, Imm}, DAG, Subtarget);
-      }
       return getAVX512Node(IsFSHR ? ISD::FSHR : ISD::FSHL, DL, VT,
                            {Op0, Op1, Amt}, DAG, Subtarget);
     }
@@ -55606,6 +55598,29 @@ static SDValue combineCVTP2I_CVTTP2I(SDNode *N, SelectionDAG &DAG,
   return SDValue();
 }
 
+static SDValue combineFunnelShift(SDNode *N, SelectionDAG &DAG,
+                                  const X86Subtarget &Subtarget) {
+  MVT VT = N->getSimpleValue(0);
+  SDLoc DL(N);
+  SDValue N0 = N->getOperand(0);
+  SDValue N1 = N->getOperand(1);
+  SDValue Amt = N->getOperand(2);
+  unsigned EltSizeInBits = VT.getScalarSizeInBits();
+
+  APInt APIntShiftAmt;
+  bool IsCstSplat = X86::isConstantSplat(Amt, APIntShiftAmt);
+
+  if (IsCstSplat) {
+    if (Op.getOpcode() == ISD::FSHR)
+      std::swap(Op0, Op1);
+    uint64_t ShiftAmt = APIntShiftAmt.urem(EltSizeInBits);
+    SDValue Imm = DAG.getTargetConstant(ShiftAmt, DL, MVT::i8);
+    return getAVX512Node(IsFSHR ? X86ISD::VSHRD : X86ISD::VSHLD, DL, VT,
+                         {Op0, Op1, Imm}, DAG, Subtarget);
+  }
+  return SDValue();
+}
+
 /// Do target-specific dag combines on X86ISD::ANDNP nodes.
 static SDValue combineAndnp(SDNode *N, SelectionDAG &DAG,
                             TargetLowering::DAGCombinerInfo &DCI,
@@ -61025,6 +61040,8 @@ SDValue X86TargetLowering::PerformDAGCombine(SDNode *N,
   case ISD::FNEG:           return combineFneg(N, DAG, DCI, Subtarget);
   case ISD::TRUNCATE:       return combineTruncate(N, DAG, Subtarget);
   case X86ISD::VTRUNC:      return combineVTRUNC(N, DAG, DCI);
+  case ISD::FSHL:
+  case ISD::FSHR:           return combineFunnelShift(N, DAG, Subtarget);
   case X86ISD::ANDNP:       return combineAndnp(N, DAG, DCI, Subtarget);
   case X86ISD::FAND:        return combineFAnd(N, DAG, Subtarget);
   case X86ISD::FANDN:       return combineFAndn(N, DAG, Subtarget);
