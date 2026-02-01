@@ -6,14 +6,17 @@
 //
 //===----------------------------------------------------------------------===//
 //
+// This file implements the TaintAnalysis pass which identifies tainted
+// registers at the MIR level based on IR function argument attributes.
 //
 //===----------------------------------------------------------------------===//
 
 #include "llvm/CodeGen/TaintAnalysis.h"
-#include "llvm/Support/CommandLine.h"
-#include "llvm/Support/Error.h"
-#include "llvm/Support/LineIterator.h"
-#include "llvm/Support/MemoryBuffer.h"
+#include "llvm/CodeGen/MachineFunction.h"
+#include "llvm/CodeGen/MachineRegisterInfo.h"
+#include "llvm/IR/Argument.h"
+#include "llvm/IR/Function.h"
+#include "llvm/Support/Debug.h"
 
 using namespace llvm;
 
@@ -21,20 +24,75 @@ using namespace llvm;
 
 AnalysisKey TaintAnalysis::Key;
 
-
 TaintInfo TaintAnalysis::run(MachineFunction &MF,
                              MachineFunctionAnalysisManager &MFAM) {
-  LLVM_DEBUG(dbgs() << "TaintAnalysis run on: " << MF.getName() << "\n");
+  TaintInfo Result;
+  const Function &F = MF.getFunction();
+  const MachineRegisterInfo &MRI = MF.getRegInfo();
 
+  LLVM_DEBUG(dbgs() << "TaintAnalysis: analyzing function " << F.getName()
+                    << "\n");
 
-  return TaintInfo {};
+  // Collect which argument indices are tainted based on IR attributes
+  SmallVector<unsigned, 4> TaintedArgIndices;
+  for (const Argument &Arg : F.args()) {
+    if (Arg.hasAttribute("tainted")) {
+      TaintedArgIndices.push_back(Arg.getArgNo());
+      LLVM_DEBUG(dbgs() << "  IR arg " << Arg.getArgNo()
+                        << " has 'tainted' attribute\n");
+    }
+  }
+
+  if (TaintedArgIndices.empty()) {
+    LLVM_DEBUG(dbgs() << "  No tainted arguments found\n");
+    return Result;
+  }
+
+  // Map tainted argument indices to virtual registers via liveins.
+  // MRI.liveins() returns pairs of (MCRegister, Register) where:
+  //   - MCRegister is the physical register (e.g., $edi, $esi on x86-64)
+  //   - Register is the virtual register it was copied into
+  //
+  // For simple scalar arguments, the order of liveins corresponds to argument
+  // order (based on calling convention). This is a simplification that works
+  // for basic integer/pointer arguments.
+  unsigned LiveInIdx = 0;
+  for (const auto &[PhysReg, VirtReg] : MRI.liveins()) {
+    // Check if this livein index corresponds to a tainted argument
+    if (llvm::is_contained(TaintedArgIndices, LiveInIdx)) {
+      if (VirtReg.isValid()) {
+        Result.setTainted(VirtReg);
+        LLVM_DEBUG(dbgs() << "  Marked virtual register "
+                          << printReg(VirtReg, nullptr)
+                          << " as tainted (from arg " << LiveInIdx << ", phys "
+                          << printReg(PhysReg, nullptr) << ")\n");
+      } else {
+        // If no virtual register, the physical register is used directly
+        Result.setTainted(PhysReg);
+        LLVM_DEBUG(dbgs() << "  Marked physical register "
+                          << printReg(PhysReg, nullptr)
+                          << " as tainted (from arg " << LiveInIdx << ")\n");
+      }
+    }
+    ++LiveInIdx;
+  }
+
+  LLVM_DEBUG(dbgs() << "  Total tainted registers: " << Result.count() << "\n");
+
+  return Result;
 }
 
 PreservedAnalyses TaintAnalysisPass::run(MachineFunction &MF,
                                          MachineFunctionAnalysisManager &MFAM) {
-  auto PA = getMachineFunctionPassPreservedAnalyses();
+  auto &TI = MFAM.getResult<TaintAnalysis>(MF);
 
-  auto TI = MFAM.getResult<TaintAnalysis>(MF);
+  LLVM_DEBUG({
+    if (!TI.empty()) {
+      dbgs() << "TaintAnalysisPass: " << MF.getName() << " has " << TI.count()
+             << " tainted register(s)\n";
+    }
+  });
 
-  return PA;
+  // Analysis pass doesn't modify the IR
+  return getMachineFunctionPassPreservedAnalyses();
 }
