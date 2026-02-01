@@ -29,6 +29,7 @@ TaintInfo TaintAnalysis::run(MachineFunction &MF,
   TaintInfo Result;
   const Function &F = MF.getFunction();
   const MachineRegisterInfo &MRI = MF.getRegInfo();
+  const TargetRegisterInfo *TRI = MF.getSubtarget().getRegisterInfo();
 
   LLVM_DEBUG(dbgs() << "TaintAnalysis: analyzing function " << F.getName()
                     << "\n");
@@ -49,28 +50,23 @@ TaintInfo TaintAnalysis::run(MachineFunction &MF,
   }
 
   // Map tainted argument indices to virtual registers via liveins.
-  // MRI.liveins() returns pairs of (MCRegister, Register) where:
-  //   - MCRegister is the physical register (e.g., $edi, $esi on x86-64)
-  //   - Register is the virtual register it was copied into
   //
   // For simple scalar arguments, the order of liveins corresponds to argument
   // order (based on calling convention). This is a simplification that works
   // for basic integer/pointer arguments.
   unsigned LiveInIdx = 0;
   for (const auto &[PhysReg, VirtReg] : MRI.liveins()) {
-    // Check if this livein index corresponds to a tainted argument
     if (llvm::is_contained(TaintedArgIndices, LiveInIdx)) {
       if (VirtReg.isValid()) {
         Result.setTainted(VirtReg);
         LLVM_DEBUG(dbgs() << "  Marked virtual register "
-                          << printReg(VirtReg, nullptr)
+                          << printReg(VirtReg, TRI)
                           << " as tainted (from arg " << LiveInIdx << ", phys "
-                          << printReg(PhysReg, nullptr) << ")\n");
+                          << printReg(PhysReg, TRI) << ")\n");
       } else {
-        // If no virtual register, the physical register is used directly
         Result.setTainted(PhysReg);
         LLVM_DEBUG(dbgs() << "  Marked physical register "
-                          << printReg(PhysReg, nullptr)
+                          << printReg(PhysReg, TRI)
                           << " as tainted (from arg " << LiveInIdx << ")\n");
       }
     }
