@@ -1197,6 +1197,10 @@ void TargetPassConfig::addMachinePasses() {
   if (!isPassSubstitutedOrOverridden(&PrologEpilogCodeInserterID))
       addPass(createPrologEpilogInserterPass());
 
+  // Run taint analysis after prolog/epilog insertion when export is requested.
+  // The pass is a no-op if -taint-output is not specified.
+  addPass(createTaintAnalysisLegacyPass());
+
   /// Add passes that optimize machine instructions after register allocation.
   if (getOptLevel() != CodeGenOptLevel::None)
       addMachineLateOptimization();

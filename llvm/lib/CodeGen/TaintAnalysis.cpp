@@ -13,13 +13,23 @@
 
 #include "llvm/CodeGen/TaintAnalysis.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/StringMap.h"
 #include "llvm/CodeGen/MachineFunction.h"
+#include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
+#include "llvm/CodeGen/Passes.h"
+#include "llvm/CodeGen/TargetSubtargetInfo.h"
 #include "llvm/IR/Argument.h"
+#include "llvm/IR/DebugInfoMetadata.h"
+#include "llvm/IR/DebugLoc.h"
 #include "llvm/IR/Function.h"
+#include "llvm/InitializePasses.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
 using namespace llvm;
@@ -261,9 +271,12 @@ TaintResult TaintAnalysis::run(MachineFunction &MF,
   return TaintResult{std::move(Result), std::move(IN)};
 }
 
-PreservedAnalyses TaintAnalysisPass::run(MachineFunction &MF,
-                                         MachineFunctionAnalysisManager &MFAM) {
-  auto &TR = MFAM.getResult<TaintAnalysis>(MF);
+/// Shared implementation: run taint analysis on MF and export results.
+static void runTaintAnalysisAndExport(MachineFunction &MF) {
+  // Run the core analysis.
+  MachineFunctionAnalysisManager DummyMFAM;
+  TaintAnalysis TA;
+  TaintResult TR = TA.run(MF, DummyMFAM);
 
   LLVM_DEBUG({
     if (!TR.Merged.empty()) {
@@ -273,47 +286,146 @@ PreservedAnalyses TaintAnalysisPass::run(MachineFunction &MF,
   });
 
   // Export tainted instructions to file if requested.
-  if (!TaintOutputFile.empty() && !TR.Merged.empty()) {
-    const TargetRegisterInfo *TRI = MF.getSubtarget().getRegisterInfo();
+  if (TaintOutputFile.empty() || TR.Merged.empty())
+    return;
 
-    // Open file in append mode so multiple functions accumulate.
-    std::error_code EC;
-    raw_fd_ostream OS(TaintOutputFile, EC, sys::fs::OF_Append);
-    if (EC) {
-      errs() << "Error opening taint output file: " << EC.message() << "\n";
-    } else {
-      OS << "# Function: " << MF.getName() << "\n";
+  const TargetRegisterInfo *TRI = MF.getSubtarget().getRegisterInfo();
 
-      for (const auto &MBB : MF) {
-        // Start from the entry state for this BB.
-        auto It = TR.IN.find(&MBB);
-        TaintState S = (It != TR.IN.end()) ? It->second : TaintState{};
-
-        for (const auto &MI : MBB) {
-          bool UsesTainted = anyTaintedRegUse(MI, S);
-
-          // Propagate taint through this instruction.
-          propagateTaintMI(MI, S, TRI);
-
-          // Check if any def became tainted.
-          bool DefsTainted = false;
-          for (const MachineOperand &MO : MI.defs()) {
-            if (MO.isReg() && MO.getReg().isValid() &&
-                S.isTainted(MO.getReg())) {
-              DefsTainted = true;
-              break;
-            }
-          }
-
-          if (UsesTainted || DefsTainted) {
-            OS << MF.getName() << "\t" << MBB.getName() << "\t";
-            MI.print(OS, /*IsStandalone=*/true);
-          }
-        }
-      }
-    }
+  // Open file in append mode so multiple functions accumulate.
+  std::error_code EC;
+  raw_fd_ostream OS(TaintOutputFile, EC, sys::fs::OF_Append);
+  if (EC) {
+    errs() << "Error opening taint output file: " << EC.message() << "\n";
+    return;
   }
 
-  // Analysis pass doesn't modify the IR
+  // Cache source file contents: filename -> vector of lines.
+  // MemoryBuffers must stay alive so StringRefs into them remain valid.
+  SmallVector<std::unique_ptr<MemoryBuffer>, 4> FileBufs;
+  StringMap<SmallVector<StringRef, 0>> FileCache;
+  auto getSourceLine = [&](StringRef Filename, unsigned Line) -> StringRef {
+    auto It = FileCache.find(Filename);
+    if (It == FileCache.end()) {
+      auto BufOrErr = MemoryBuffer::getFile(Filename);
+      if (!BufOrErr) {
+        FileCache[Filename] = {};
+        return "";
+      }
+      StringRef Contents = BufOrErr.get()->getBuffer();
+      FileBufs.push_back(std::move(BufOrErr.get()));
+      SmallVector<StringRef, 0> Lines;
+      Contents.split(Lines, '\n');
+      FileCache[Filename] = std::move(Lines);
+      It = FileCache.find(Filename);
+    }
+    const auto &Lines = It->second;
+    if (Line == 0 || Line > Lines.size())
+      return "";
+    return Lines[Line - 1]; // 1-indexed to 0-indexed.
+  };
+
+  OS << "# Function: " << MF.getName() << "\n";
+
+  // Deduplicate by (filename, line) to avoid repeating the same source line.
+  DenseSet<std::pair<unsigned, unsigned>> SeenLines; // hash of filename + line
+  // Storage for full path strings so StringRefs into them stay valid.
+  SmallVector<std::string, 8> PathStorage;
+
+  for (const auto &MBB : MF) {
+    // Start from the entry state for this BB.
+    auto It = TR.IN.find(&MBB);
+    TaintState S = (It != TR.IN.end()) ? It->second : TaintState{};
+
+    for (const auto &MI : MBB) {
+      bool UsesTainted = anyTaintedRegUse(MI, S);
+
+      // Propagate taint through this instruction.
+      propagateTaintMI(MI, S, TRI);
+
+      // Check if any def became tainted.
+      bool DefsTainted = false;
+      for (const MachineOperand &MO : MI.defs()) {
+        if (MO.isReg() && MO.getReg().isValid() && S.isTainted(MO.getReg())) {
+          DefsTainted = true;
+          break;
+        }
+      }
+
+      if (!UsesTainted && !DefsTainted)
+        continue;
+
+      // Only export if debug info is available.
+      const DebugLoc &DL = MI.getDebugLoc();
+      if (!DL)
+        continue;
+
+      StringRef Filename = "";
+      if (auto *Scope = dyn_cast<DIScope>(DL->getScope())) {
+        // Build full path: directory + filename.
+        if (auto *File = Scope->getFile()) {
+          SmallString<256> FullPath(File->getDirectory());
+          sys::path::append(FullPath, File->getFilename());
+          PathStorage.emplace_back(FullPath.str());
+          Filename = PathStorage.back();
+        }
+      }
+      unsigned Line = DL.getLine();
+
+      if (Filename.empty() || Line == 0)
+        continue;
+
+      // Deduplicate by filename hash + line number.
+      auto Key = std::make_pair((unsigned)llvm::hash_value(Filename), Line);
+      if (!SeenLines.insert(Key).second)
+        continue;
+
+      StringRef SrcLine = getSourceLine(Filename, Line);
+      OS << Line << ": " << SrcLine.ltrim() << "\n";
+    }
+  }
+}
+
+// ===----------------------------------------------------------------------===//
+// New PM pass
+// ===----------------------------------------------------------------------===//
+
+PreservedAnalyses TaintAnalysisPass::run(MachineFunction &MF,
+                                         MachineFunctionAnalysisManager &MFAM) {
+  runTaintAnalysisAndExport(MF);
   return getMachineFunctionPassPreservedAnalyses();
+}
+
+// ===----------------------------------------------------------------------===//
+// Legacy PM pass
+// ===----------------------------------------------------------------------===//
+
+namespace {
+struct TaintAnalysisLegacy : public MachineFunctionPass {
+  static char ID;
+  TaintAnalysisLegacy() : MachineFunctionPass(ID) {
+    initializeTaintAnalysisLegacyPass(*PassRegistry::getPassRegistry());
+  }
+
+  bool runOnMachineFunction(MachineFunction &MF) override {
+    runTaintAnalysisAndExport(MF);
+    return false;
+  }
+
+  void getAnalysisUsage(AnalysisUsage &AU) const override {
+    AU.setPreservesAll();
+    MachineFunctionPass::getAnalysisUsage(AU);
+  }
+
+  StringRef getPassName() const override { return "Taint Analysis"; }
+};
+} // end anonymous namespace
+
+char TaintAnalysisLegacy::ID = 0;
+char &llvm::TaintAnalysisLegacyID = TaintAnalysisLegacy::ID;
+
+INITIALIZE_PASS(TaintAnalysisLegacy, DEBUG_TYPE, "Taint Analysis Pass", false,
+                false)
+
+MachineFunctionPass *llvm::createTaintAnalysisLegacyPass() {
+  return new TaintAnalysisLegacy();
 }

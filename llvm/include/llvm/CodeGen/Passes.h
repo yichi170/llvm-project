@@ -263,6 +263,11 @@ LLVM_ABI MachineFunctionPass *createPrologEpilogInserterPass();
 /// register allocation.
 LLVM_ABI extern char &ExpandPostRAPseudosID;
 
+/// TaintAnalysis - This pass identifies tainted registers based on
+/// IR function argument attributes and optionally exports results.
+LLVM_ABI extern char &TaintAnalysisLegacyID;
+LLVM_ABI MachineFunctionPass *createTaintAnalysisLegacyPass();
+
 /// PostRAHazardRecognizer - This pass runs the post-ra hazard
 /// recognizer.
 LLVM_ABI extern char &PostRAHazardRecognizerID;

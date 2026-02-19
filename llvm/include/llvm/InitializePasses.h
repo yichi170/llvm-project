@@ -328,6 +328,7 @@ LLVM_ABI void initializeStripDebugMachineModulePass(PassRegistry &);
 LLVM_ABI void initializeStructurizeCFGLegacyPassPass(PassRegistry &);
 LLVM_ABI void initializeTailCallElimPass(PassRegistry &);
 LLVM_ABI void initializeTailDuplicateLegacyPass(PassRegistry &);
+LLVM_ABI void initializeTaintAnalysisLegacyPass(PassRegistry &);
 LLVM_ABI void initializeTargetLibraryInfoWrapperPassPass(PassRegistry &);
 LLVM_ABI void initializeTargetPassConfigPass(PassRegistry &);
 LLVM_ABI void initializeTargetTransformInfoWrapperPassPass(PassRegistry &);
