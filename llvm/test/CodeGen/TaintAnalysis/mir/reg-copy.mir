@@ -1,0 +1,39 @@
+# RUN: llc -mtriple=aarch64 -run-pass=taint-analysis -debug-only=taint-analysis %s -o /dev/null 2>&1 | FileCheck %s
+# REQUIRES: aarch64-registered-target
+
+--- |
+  target datalayout = "e-m:o-i64:64-i128:128-n32:64-S128"
+  target triple = "aarch64-apple-darwin"
+
+  define void @test_reg_copy(i32 "tainted" %secret) {
+  entry:
+    ret void
+  }
+...
+---
+name:            test_reg_copy
+tracksRegLiveness: true
+liveins:
+  - { reg: '$w0' }
+body:             |
+  bb.0:
+    liveins: $w0
+    
+    ; W0 is tainted (from arguments)
+    ; W1 gets copied from W0, so it becomes tainted.
+    $w1 = COPY $w0
+    
+    ; W2 is hardcoded, not tainted.
+    $w2 = MOVZWi 42, 0
+    
+    ; W3 gets W1 (which is tainted).
+    $w3 = COPY killed $w1
+    
+    RET_ReallyLR
+...
+
+# CHECK: TaintAnalysis: analyzing function test_reg_copy
+# CHECK: Marked physical register $w0 as tainted (from arg 0)
+# CHECK: set $w1 as tainted
+# CHECK: set $w3 as tainted
+# CHECK: TaintAnalysisPass: test_reg_copy has 3 tainted register(s)

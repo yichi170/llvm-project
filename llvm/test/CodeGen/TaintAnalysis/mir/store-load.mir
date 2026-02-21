@@ -1,0 +1,44 @@
+# RUN: llc -mtriple=aarch64 -run-pass=taint-analysis -debug-only=taint-analysis %s -o /dev/null 2>&1 | FileCheck %s
+# REQUIRES: aarch64-registered-target
+
+--- |
+  target datalayout = "e-m:o-i64:64-i128:128-n32:64-S128"
+  target triple = "aarch64-apple-darwin"
+
+  define void @test_store_load(i32 "tainted" %secret) {
+  entry:
+    %arr = alloca [4 x i32], align 4
+    ret void
+  }
+...
+---
+name:            test_store_load
+tracksRegLiveness: true
+liveins:
+  - { reg: '$w0' }
+stack:
+  - { id: 0, name: arr, type: default, offset: 0, size: 16, alignment: 4 }
+body:             |
+  bb.0:
+    liveins: $w0
+    
+    ; W0 is tainted.
+    ; Store W0 to frame index 0. This should taint the frame index.
+    STRWui killed $w0, %stack.0.arr, 0 :: (store (s32) into %ir.arr)
+    
+    ; Load from frame index 0 to W1. This should taint W1 because the FI is tainted.
+    $w1 = LDRWui %stack.0.arr, 0 :: (dereferenceable load (s32) from %ir.arr)
+    
+    ; W2 gets W1 (which is tainted).
+    $w2 = COPY killed $w1
+    
+    RET_ReallyLR
+...
+
+# CHECK: TaintAnalysis: analyzing function test_store_load
+# CHECK: Marked physical register $w0 as tainted (from arg 0)
+# CHECK: taint mem @arr (store)
+# CHECK: taint defs (load)
+# CHECK: set $w1 as tainted
+# CHECK: set $w2 as tainted
+# CHECK: TaintAnalysisPass: test_store_load has 3 tainted register(s)
