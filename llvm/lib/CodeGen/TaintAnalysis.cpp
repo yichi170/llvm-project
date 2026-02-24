@@ -92,15 +92,47 @@ static void taintAllRegDefs(const llvm::MachineInstr &MI, llvm::TaintState &S,
 
 static void propagateTaintMI(const llvm::MachineInstr &MI, TaintState &S,
                              const llvm::TargetRegisterInfo *TRI) {
-  // Reg -> Reg
-  if (anyTaintedRegUse(MI, S)) {
+  // -----------------------------------------------------------------------
+  // Call instructions: propagate taint to return regs, then clear all
+  // implicit clobbers (caller-saved registers overwritten by the callee).
+  // -----------------------------------------------------------------------
+  if (MI.isCall()) {
+    // Conservative intra-procedure assumption: any call can return tainted data.
+    // Taint all non-dead defs (explicit defs and live implicit defs = return regs).
+    for (const llvm::MachineOperand &MO : MI.operands()) {
+      if (MO.isReg() && MO.isDef() && MO.getReg().isValid() && !MO.isDead()) {
+        S.setTainted(MO.getReg());
+        LLVM_DEBUG(dbgs() << "      taint return reg "
+                          << printReg(MO.getReg(), TRI) << " (call)\n");
+      }
+    }
+    // Clear dead implicit defs — these are genuine clobbers the callee
+    // overwrites and the caller never reads.
+    for (const llvm::MachineOperand &MO : MI.implicit_operands()) {
+      if (MO.isReg() && MO.isDef() && MO.isDead()) {
+        S.clearTainted(MO.getReg());
+      }
+    }
+    return;
+  }
+
+  // -----------------------------------------------------------------------
+  // Memory propagation state (needed for both store and load paths).
+  // -----------------------------------------------------------------------
+  SmallVector<MemLoc, 2> Mems = getMemLocs(MI);
+  bool HasMem = !Mems.empty();
+  bool LoadFromTainted = false;
+
+  // -----------------------------------------------------------------------
+  // Reg -> Reg, and Reg -> Mem (store).
+  // -----------------------------------------------------------------------
+  bool UsesTainted = anyTaintedRegUse(MI, S);
+
+  if (UsesTainted) {
     taintAllRegDefs(MI, S, TRI);
   }
 
-  SmallVector<MemLoc, 2> Mems = getMemLocs(MI);
-  bool HasMem = !Mems.empty();
-
-  if (MI.mayStore() && anyTaintedRegUse(MI, S)) {
+  if (MI.mayStore() && UsesTainted) {
     if (!HasMem) {
       S.UnknownMemTainted = true;
       dbgs() << "      taint unknown mem (store)\n";
@@ -117,8 +149,10 @@ static void propagateTaintMI(const llvm::MachineInstr &MI, TaintState &S,
     }
   }
 
+  // -----------------------------------------------------------------------
+  // Mem -> Reg (load).
+  // -----------------------------------------------------------------------
   if (MI.mayLoad()) {
-    bool LoadFromTainted = false;
     if (!HasMem) {
       LoadFromTainted = S.UnknownMemTainted;
     } else {
@@ -129,6 +163,24 @@ static void propagateTaintMI(const llvm::MachineInstr &MI, TaintState &S,
     if (LoadFromTainted) {
       LLVM_DEBUG(dbgs() << "      taint defs (load)\n");
       taintAllRegDefs(MI, S, TRI);
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // Clean redefinition: if no operand was tainted and this wasn't a load from
+  // tainted memory, clear any taint on the non-implicit defs.
+  // This handles the case where a physical register is reused and overwritten
+  // with a clean value (e.g., $w0 = MOVZWi 42 after $w0 was tainted).
+  // -----------------------------------------------------------------------
+  if (!UsesTainted && !LoadFromTainted) {
+    for (const llvm::MachineOperand &MO : MI.defs()) {
+      if (MO.isReg() && !MO.isImplicit() && MO.getReg().isValid()) {
+        if (S.isTainted(MO.getReg())) {
+          LLVM_DEBUG(dbgs() << "      clear " << printReg(MO.getReg(), TRI)
+                            << " (clean redefinition)\n");
+        }
+        S.clearTainted(MO.getReg());
+      }
     }
   }
 }
@@ -162,11 +214,16 @@ TaintResult TaintAnalysis::run(MachineFunction &MF,
     }
   }
 
-  if (TaintedArgIndices.empty()) {
-    LLVM_DEBUG(dbgs() << "  No tainted arguments found\n");
-    return TaintResult{TaintState{},
-                       DenseMap<const MachineBasicBlock *, TaintState>{}};
-  }
+  // The analysis needs to work even if there are no tainted arguments.
+  // The seed will be empty and no arguments will be marked as tainted;
+  // however, call instructions will be marked as tainted if the callee
+  // is tainted (currently, conservatively taint all return values).
+  //
+  // if (TaintedArgIndices.empty()) {
+  //   LLVM_DEBUG(dbgs() << "  No tainted arguments found\n");
+  //   return TaintResult{TaintState{},
+  //                      DenseMap<const MachineBasicBlock *, TaintState>{}};
+  // }
 
   TaintState Seed;
 
@@ -353,6 +410,9 @@ static void runTaintAnalysisAndExport(MachineFunction &MF) {
 
       if (!UsesTainted && !DefsTainted)
         continue;
+
+      // Record this instruction in TaintedInstrs for future instrumentation.
+      TR.TaintedInstrs.insert(&MI);
 
       // Only export if debug info is available.
       const DebugLoc &DL = MI.getDebugLoc();

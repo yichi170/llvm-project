@@ -1,0 +1,167 @@
+# RUN: llc -mtriple=aarch64 -run-pass=taint-analysis -debug-only=taint-analysis %s -o /dev/null 2>&1 | FileCheck %s
+# REQUIRES: aarch64-registered-target
+#
+# Generated with:
+#   clang -O0 -S -emit-llvm <input>.ll
+#   opt -passes=taint-annotate -taint-src=...
+#   llc -mtriple=aarch64 -O0 -stop-before=taint-analysis
+
+--- |
+  target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128-Fn32"
+  target triple = "aarch64"
+
+  ; Test 1: clean redefinition should remove taint from $w0.
+  define i32 @test_clean_redef(i32 "tainted" %secret) noinline nounwind {
+  entry:
+    ret i32 42
+  }
+
+  ; Test 2: redefinition where a use is tainted should keep the def tainted.
+  define i32 @test_tainted_redef(i32 "tainted" %secret) noinline nounwind {
+  entry:
+    %result = add i32 %secret, 1
+    ret i32 %result
+  }
+
+  attributes #0 = { noinline nounwind }
+...
+---
+name:            test_clean_redef
+alignment:       4
+exposesReturnsTwice: false
+legalized:       true
+regBankSelected: true
+selected:        true
+failedISel:      false
+tracksRegLiveness: true
+hasWinCFI:       false
+noPhis:          true
+isSSA:           false
+noVRegs:         true
+hasFakeUses:     false
+callsEHReturn:   false
+callsUnwindInit: false
+hasEHContTarget: false
+hasEHScopes:     false
+hasEHFunclets:   false
+isOutlined:      false
+debugInstrRef:   false
+failsVerification: false
+tracksDebugUserValues: false
+registers:       []
+liveins:
+  - { reg: '$w0', virtual-reg: '' }
+frameInfo:
+  isFrameAddressTaken: false
+  isReturnAddressTaken: false
+  hasStackMap:     false
+  hasPatchPoint:   false
+  stackSize:       0
+  offsetAdjustment: 0
+  maxAlignment:    1
+  adjustsStack:    false
+  hasCalls:        false
+  stackProtector:  ''
+  functionContext: ''
+  maxCallFrameSize: 0
+  cvBytesOfCalleeSavedRegisters: 0
+  hasOpaqueSPAdjustment: false
+  hasVAStart:      false
+  hasMustTailInVarArgFunc: false
+  hasTailCall:     false
+  isCalleeSavedInfoValid: true
+  localFrameSize:  0
+fixedStack:      []
+stack:           []
+entry_values:    []
+callSites:       []
+debugValueSubstitutions: []
+constants:       []
+machineFunctionInfo:
+  hasRedZone:      false
+  stackSizeZPR:    0
+  stackSizePPR:    0
+body:             |
+  bb.1.entry:
+    liveins: $w0
+
+    ; $w0 is tainted (from arg), then overwritten with a constant.
+    ; The clean definition should clear the taint.
+    renamable $w0 = MOVi32imm 42
+    RET_ReallyLR implicit killed $w0
+...
+
+# CHECK-LABEL: TaintAnalysis: analyzing function test_clean_redef
+# CHECK: Marked physical register $w0 as tainted (from arg 0)
+# CHECK: clear $w0 (clean redefinition)
+# CHECK: Total tainted regs: 0, tainted FIs: 0, total: 0
+
+---
+name:            test_tainted_redef
+alignment:       4
+exposesReturnsTwice: false
+legalized:       true
+regBankSelected: true
+selected:        true
+failedISel:      false
+tracksRegLiveness: true
+hasWinCFI:       false
+noPhis:          true
+isSSA:           false
+noVRegs:         true
+hasFakeUses:     false
+callsEHReturn:   false
+callsUnwindInit: false
+hasEHContTarget: false
+hasEHScopes:     false
+hasEHFunclets:   false
+isOutlined:      false
+debugInstrRef:   false
+failsVerification: false
+tracksDebugUserValues: false
+registers:       []
+liveins:
+  - { reg: '$w0', virtual-reg: '' }
+frameInfo:
+  isFrameAddressTaken: false
+  isReturnAddressTaken: false
+  hasStackMap:     false
+  hasPatchPoint:   false
+  stackSize:       0
+  offsetAdjustment: 0
+  maxAlignment:    1
+  adjustsStack:    false
+  hasCalls:        false
+  stackProtector:  ''
+  functionContext: ''
+  maxCallFrameSize: 0
+  cvBytesOfCalleeSavedRegisters: 0
+  hasOpaqueSPAdjustment: false
+  hasVAStart:      false
+  hasMustTailInVarArgFunc: false
+  hasTailCall:     false
+  isCalleeSavedInfoValid: true
+  localFrameSize:  0
+fixedStack:      []
+stack:           []
+entry_values:    []
+callSites:       []
+debugValueSubstitutions: []
+constants:       []
+machineFunctionInfo:
+  hasRedZone:      false
+  stackSizeZPR:    0
+  stackSizePPR:    0
+body:             |
+  bb.1.entry:
+    liveins: $w0
+
+    ; $w0 is tainted; ADDWri uses $w0 (tainted), so the result stays tainted.
+    renamable $w0 = ADDWri killed renamable $w0, 1, 0
+    RET_ReallyLR implicit killed $w0
+...
+
+# CHECK-LABEL: TaintAnalysis: analyzing function test_tainted_redef
+# CHECK: Marked physical register $w0 as tainted (from arg 0)
+# CHECK: set $w0 as tainted
+# CHECK: TaintAnalysisPass: test_tainted_redef has 1 tainted register(s)

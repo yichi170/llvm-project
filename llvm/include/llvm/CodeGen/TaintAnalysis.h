@@ -19,6 +19,7 @@
 #include "llvm/ADT/SparseBitVector.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachineFunction.h"
+#include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/Register.h"
 
 namespace llvm {
@@ -68,8 +69,15 @@ public:
       TaintedRegs.set(R.id());
   }
 
+  /// Remove a register from the tainted set (clean redefinition or clobber).
+  void clearTainted(Register R) {
+    if (R.isValid())
+      TaintedRegs.reset(R.id());
+  }
+
   bool isTaintedFI(int FI) const { return TaintedFrameIdx.contains(FI); }
   void setTaintedFI(int FI) { TaintedFrameIdx.insert(FI); }
+  void clearTaintedFI(int FI) { TaintedFrameIdx.erase(FI); }
 
   bool isTaintedMem(const MemLoc &L) const {
     if (L.K == MemLoc::IRValue)
@@ -100,6 +108,10 @@ public:
 struct TaintResult {
   TaintState Merged;
   DenseMap<const MachineBasicBlock *, TaintState> IN;
+  /// Instructions that touch tainted data (use or define a tainted value).
+  /// Populated during the export/replay walk; not part of the lattice.
+  /// Intended for use by future instrumentation passes.
+  DenseSet<const MachineInstr *> TaintedInstrs;
 };
 
 /// TaintAnalysis is a MachineFunction analysis that computes which registers
